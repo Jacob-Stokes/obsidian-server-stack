@@ -1,0 +1,34 @@
+name: build
+
+# Checks that the images still build. Nothing is published: install.sh builds
+# them locally, from the code you cloned.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "services/**"
+      - "sync/**/Dockerfile"
+  pull_request:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        service:
+          - services/obsidian-mcp
+          - services/obsidian-api
+          - sync/git-sync
+          - sync/official-obsidian-sync
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.service }}
+          push: false

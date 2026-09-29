@@ -1,0 +1,10 @@
+.env
+sync/*/.env
+node_modules/
+dist/
+vault/
+*.log
+.DS_Store
+# sync credentials/state — never commit
+sync/*/ssh/
+sync/*/data/

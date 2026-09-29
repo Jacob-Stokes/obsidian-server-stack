@@ -1,0 +1,22 @@
+# Caddy config for Self-hosted LiveSync CouchDB.
+# Vendored from vrtmrz/obsidian-livesync (MIT). See ../../../THIRD_PARTY_NOTICES.md.
+#
+# CouchDB handles CORS itself — do not add CORS headers here, and do not
+# intercept OPTIONS requests.
+
+{
+    email {$ACME_EMAIL}
+}
+
+{$COUCHDB_DOMAIN} {
+    reverse_proxy couchdb:5984 {
+        header_up Host {host}
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Forwarded-Proto {scheme}
+    }
+
+    log {
+        output stdout
+        level WARN
+    }
+}

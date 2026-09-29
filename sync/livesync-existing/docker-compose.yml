@@ -1,0 +1,35 @@
+# Connect to a LiveSync server you already use. No CouchDB here: this server
+# joins your existing one as one more device and mirrors the vault into real
+# files for obsidian-api. Settings come from a Setup URI (see README).
+
+name: ${INSTANCE_PREFIX:-}obsidian-livesync-existing
+
+services:
+  # One-shot: fixes ownership of the shared vault dir + the CLI's local
+  # database volume before vault-sync (uid 1000) touches them.
+  vault-sync-init:
+    image: ghcr.io/vrtmrz/livesync-cli:1.0.21-cli
+    container_name: ${INSTANCE_PREFIX:-}livesync-existing-init
+    restart: on-failure
+    entrypoint: ["sh", "-c", "mkdir -p /vault /data && chown -R 1000:1000 /vault /data"]
+    volumes:
+      - ${VAULT_HOST_PATH:-../../vault}:/vault
+      - vault-sync-db:/data
+
+  vault-sync:
+    image: ghcr.io/vrtmrz/livesync-cli:1.0.21-cli
+    container_name: ${INSTANCE_PREFIX:-}livesync-existing-sync
+    restart: unless-stopped
+    user: "1000:1000"
+    depends_on:
+      vault-sync-init:
+        condition: service_completed_successfully
+    # Same script as self-hosted-livesync, so the two can't drift apart.
+    entrypoint: ["/scripts/vault-sync-entrypoint.sh"]
+    volumes:
+      - ${VAULT_HOST_PATH:-../../vault}:/vault
+      - vault-sync-db:/data
+      - ../self-hosted-livesync/scripts/vault-sync-entrypoint.sh:/scripts/vault-sync-entrypoint.sh:ro
+
+volumes:
+  vault-sync-db:

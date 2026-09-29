@@ -1,0 +1,19 @@
+# Official Obsidian Sync — our own thin image, not someone else's.
+# Installs `obsidian-headless` straight from npm at build time, the same
+# distribution channel Obsidian themselves publish it through.
+# See ../../THIRD_PARTY_NOTICES.md.
+#
+# Requires an active Obsidian Sync subscription: https://obsidian.md/sync
+
+name: ${INSTANCE_PREFIX:-}obsidian-official-sync
+
+services:
+  obsidian-sync:
+    build: .
+    container_name: ${INSTANCE_PREFIX:-}obsidian-official-sync
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ${VAULT_HOST_PATH:-../../vault}:/vault
+      - ./data:/data

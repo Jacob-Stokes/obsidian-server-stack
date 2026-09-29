@@ -1,0 +1,184 @@
+# Self-hosted LiveSync — CouchDB backend for the Obsidian "Self-hosted LiveSync"
+# plugin, plus a headless worker that materializes the synced vault as real
+# markdown files at VAULT_HOST_PATH so obsidian-api/obsidian-mcp can read it.
+#
+# couchdb/couchdb-init/caddy/tailscale/cloudflared are vendored from
+# https://github.com/vrtmrz/obsidian-livesync (MIT, docker/ folder), paths
+# adjusted to fit this repo. vault-sync/vault-sync-init are ours — a lean
+# wrapper around that same project's official headless CLI (also MIT), not
+# vendored from anywhere. See ../../THIRD_PARTY_NOTICES.md.
+#
+# PROFILES
+#   (default)              CouchDB + vault materialization — LAN/localhost, no TLS
+#   --profile caddy        + Caddy reverse proxy, auto TLS via Let's Encrypt
+#   --profile tailscale    + Tailscale sidecar, HTTPS via *.ts.net
+#   --profile cloudflare   + cloudflared tunnel
+#
+# QUICK START:
+#   cp .env.example .env && edit .env
+#   docker compose up -d
+#   curl -u admin:yourpassword http://localhost:5984/_up
+
+name: ${INSTANCE_PREFIX:-}obsidian-livesync
+
+services:
+  couchdb:
+    image: couchdb:latest
+    container_name: ${INSTANCE_PREFIX:-}livesync-couchdb
+    restart: unless-stopped
+    environment:
+      COUCHDB_USER: ${COUCHDB_USER:?Set COUCHDB_USER in .env}
+      COUCHDB_PASSWORD: ${COUCHDB_PASSWORD:?Set COUCHDB_PASSWORD in .env}
+    volumes:
+      - couchdb-data:/opt/couchdb/data
+      # Mount to /opt/couchdb/etc/local.ini (NOT local.d/). Do NOT add :ro —
+      # the CouchDB entrypoint chmods this file at startup and crashes on a
+      # read-only mount. It's only read at startup; runtime changes go via
+      # the REST API (see couchdb-init.sh) into local.d/docker.ini.
+      - ./config/livesync.ini:/opt/couchdb/etc/local.ini
+    ports:
+      - "${COUCHDB_PORT:-5984}:5984"
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - "curl -sf -u ${COUCHDB_USER}:${COUCHDB_PASSWORD} http://localhost:5984/_session | grep -q ok || exit 1"
+      interval: 5s
+      timeout: 5s
+      retries: 24
+      start_period: 20s
+    networks:
+      - livesync-net
+
+  # One-shot: runs after CouchDB is healthy, sets single-node cluster, auth,
+  # CORS, size limits, creates the database. Safe to re-run.
+  couchdb-init:
+    image: curlimages/curl:latest
+    container_name: ${INSTANCE_PREFIX:-}livesync-init
+    restart: on-failure
+    depends_on:
+      couchdb:
+        condition: service_healthy
+    environment:
+      COUCHDB_INTERNAL_URL: http://couchdb:5984
+      COUCHDB_USER: ${COUCHDB_USER}
+      COUCHDB_PASSWORD: ${COUCHDB_PASSWORD}
+      COUCHDB_DATABASE: ${COUCHDB_DATABASE:-obsidiannotes}
+    volumes:
+      - ./scripts/couchdb-init.sh:/couchdb-init.sh:ro
+    entrypoint: ["sh", "/couchdb-init.sh"]
+    networks:
+      - livesync-net
+
+  # One-shot: fixes ownership of the shared vault dir + this stack's local
+  # PouchDB volume before vault-sync (uid 1000) touches them. Same reason
+  # install.sh chowns the vault dir for obsidian-api — see its comment.
+  vault-sync-init:
+    image: ghcr.io/vrtmrz/livesync-cli:1.0.21-cli
+    container_name: ${INSTANCE_PREFIX:-}livesync-vault-sync-init
+    restart: on-failure
+    entrypoint: ["sh", "-c", "mkdir -p /vault /data && chown -R 1000:1000 /vault /data"]
+    volumes:
+      - ${VAULT_HOST_PATH:-../../vault}:/vault
+      - vault-sync-db:/data
+
+  # Materializes the CouchDB-replicated vault as real markdown files at
+  # /vault, using vrtmrz's own official headless CLI — the same distribution
+  # channel as the plugin itself, no Obsidian desktop/VM/Electron involved.
+  # Point VAULT_HOST_PATH at the same folder obsidian-api uses (defaults to
+  # the root docker-compose.yml's ./vault) so the two stacks share one vault.
+  vault-sync:
+    image: ghcr.io/vrtmrz/livesync-cli:1.0.21-cli
+    container_name: ${INSTANCE_PREFIX:-}livesync-vault-sync
+    restart: unless-stopped
+    user: "1000:1000"
+    depends_on:
+      couchdb:
+        condition: service_healthy
+      vault-sync-init:
+        condition: service_completed_successfully
+    environment:
+      COUCHDB_USER: ${COUCHDB_USER}
+      COUCHDB_PASSWORD: ${COUCHDB_PASSWORD}
+      COUCHDB_DATABASE: ${COUCHDB_DATABASE:-obsidiannotes}
+      # Optional — Self-hosted LiveSync's end-to-end encryption passphrase.
+      # Leave unset if you didn't turn on E2E encryption in the plugin.
+      VAULT_ENCRYPT_PASSPHRASE: ${VAULT_ENCRYPT_PASSPHRASE:-}
+    entrypoint: ["/scripts/vault-sync-entrypoint.sh"]
+    volumes:
+      - ${VAULT_HOST_PATH:-../../vault}:/vault
+      - vault-sync-db:/data
+      - ./scripts/vault-sync-entrypoint.sh:/scripts/vault-sync-entrypoint.sh:ro
+    networks:
+      - livesync-net
+
+  # --profile caddy — public domain + automatic Let's Encrypt TLS
+  caddy:
+    image: caddy:latest
+    container_name: ${INSTANCE_PREFIX:-}livesync-caddy
+    profiles: [caddy]
+    restart: unless-stopped
+    depends_on:
+      couchdb:
+        condition: service_healthy
+    environment:
+      COUCHDB_DOMAIN: ${COUCHDB_DOMAIN:?Set COUCHDB_DOMAIN in .env for caddy profile}
+      ACME_EMAIL: ${ACME_EMAIL:?Set ACME_EMAIL in .env for caddy profile}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./config/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    networks:
+      - livesync-net
+
+  # --profile tailscale — no domain needed, HTTPS via *.ts.net
+  tailscale:
+    image: tailscale/tailscale:latest
+    container_name: ${INSTANCE_PREFIX:-}livesync-tailscale
+    profiles: [tailscale]
+    restart: unless-stopped
+    hostname: ${TS_HOSTNAME:-livesync}
+    environment:
+      TS_AUTHKEY: ${TS_AUTHKEY:?Set TS_AUTHKEY in .env for tailscale profile}
+      TS_STATE_DIR: /var/lib/tailscale
+      TS_SERVE_CONFIG: /config/serve.json
+      TS_USERSPACE: "false"
+      TS_ACCEPT_DNS: "false"
+    volumes:
+      - tailscale-state:/var/lib/tailscale
+      - ./config/ts-serve.json:/config/serve.json:ro
+      - /dev/net/tun:/dev/net/tun
+    cap_add:
+      - NET_ADMIN
+      - SYS_MODULE
+    network_mode: service:couchdb
+    depends_on:
+      - couchdb
+
+  # --profile cloudflare — Cloudflare Tunnel
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: ${INSTANCE_PREFIX:-}livesync-cloudflared
+    profiles: [cloudflare]
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${CF_TUNNEL_TOKEN:?Set CF_TUNNEL_TOKEN in .env for cloudflare profile}
+    depends_on:
+      couchdb:
+        condition: service_healthy
+    networks:
+      - livesync-net
+
+volumes:
+  couchdb-data:
+  vault-sync-db:
+  caddy-data:
+  caddy-config:
+  tailscale-state:
+
+networks:
+  livesync-net:
+    driver: bridge

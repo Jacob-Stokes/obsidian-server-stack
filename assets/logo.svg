@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 200" width="120" height="200" role="img" aria-label="Obsidian Server Stack logo">
+  <title>Obsidian Server Stack</title>
+  <defs>
+    <linearGradient id="gem" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#a78bfa"/>
+      <stop offset="0.55" stop-color="#7c3aed"/>
+      <stop offset="1" stop-color="#4c1d95"/>
+    </linearGradient>
+  </defs>
+
+  <!-- tall narrow diamond -->
+  <polygon points="60,4 104,100 60,196 16,100" fill="url(#gem)"/>
+  <!-- facets: lit left half, shaded lower-right -->
+  <polygon points="60,4 60,196 16,100" fill="#ffffff" opacity="0.10"/>
+  <polygon points="60,100 104,100 60,196" fill="#000000" opacity="0.12"/>
+
+  <!-- sync symbol -->
+  <g fill="none" stroke="#ffffff" stroke-width="5" stroke-linecap="round">
+    <path d="M41.21 93.16 A20 20 0 0 1 78.79 93.16"/>
+    <path d="M78.79 106.84 A20 20 0 0 1 41.21 106.84"/>
+  </g>
+  <g fill="#ffffff">
+    <polygon points="84.43,91.11 73.15,95.21 81.87,101.62"/>
+    <polygon points="35.57,108.89 46.85,104.79 38.13,98.38"/>
+  </g>
+</svg>

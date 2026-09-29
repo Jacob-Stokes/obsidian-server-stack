@@ -1,0 +1,16 @@
+# Git sync — keeps the shared vault in sync with a git remote on a timer.
+# Devices sync against the same repo with the obsidian-git plugin.
+
+name: ${INSTANCE_PREFIX:-}obsidian-git-sync
+
+services:
+  git-sync:
+    build: .
+    container_name: ${INSTANCE_PREFIX:-}obsidian-git-sync
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      # Same folder obsidian-api reads (the repo root's ./vault).
+      - ${VAULT_HOST_PATH:-../../vault}:/vault
+      - ./ssh:/ssh
