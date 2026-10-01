@@ -68,6 +68,7 @@ Because credentials are per vault, one install can mix sources and accounts: two
 | `obsidian-stack update` | `git pull`, rebuild, and restart everything on the new version |
 | `obsidian-stack endpoint [--show-token]` | MCP URL and bearer token |
 | `obsidian-stack link [name]` | Add the command to `/usr/local/bin` |
+| `obsidian-stack uninstall [--yes]` | Remove the install's containers, images and command; notes are kept unless chosen |
 
 The command always acts on the install it belongs to: the folder it lives in (following the link on the PATH), or one given with `--dir` or `$OBSIDIAN_STACK_DIR`. Every container the stack creates carries a Docker label with the install's `STACK_ID` from `.env`, and the command finds containers by that label rather than by name, so other Obsidian containers on the machine are never affected.
 
@@ -101,7 +102,7 @@ To update, run `obsidian-stack update`. The `.env`, vaults and sync settings are
 
 To remove one vault, run `obsidian-stack remove <id>`. Its notes stay in `vaults/<id>/` and its settings in `state/<id>/` until deleted by hand.
 
-To uninstall everything, run `docker compose down` in the repo root, `docker compose down` in `sync/couchdb` if any vault used self-hosted LiveSync, and `docker compose -p obsidian-<id> down` for each vault's sync. Notes remain in `vaults/` as plain markdown. Adding `-v` to the CouchDB `down` deletes its databases; other devices keep their copies.
+To uninstall, run `obsidian-stack uninstall`. It removes every container labelled with the install's `STACK_ID`, its network, built images and `obsidian-stack` command, then asks separately whether to delete the CouchDB databases and the notes, settings and `.env`. Both are kept unless chosen; devices keep their own copies either way. `obsidian-stack uninstall --yes` skips the prompts and keeps everything on disk.
 
 ## Tools
 

@@ -30,6 +30,8 @@ Usage: obsidian-stack [--dir PATH] [command]
   logs TARGET [-f]    logs for a vault id, or api | mcp | couchdb
   restart TARGET      restart a vault's sync, api | mcp | couchdb, or all
   update              git pull, rebuild and restart everything
+  uninstall [--yes]   remove this install's containers, images and command;
+                      notes are kept unless asked (--yes: no prompts, keep data)
   endpoint [--show-token]
                       MCP URL and bearer token
   link [NAME]         put this install's obsidian-stack on PATH
@@ -695,6 +697,70 @@ cmd_update() {
   OBSIDIAN_STACK_NO_MENU=1 cmd_install
 }
 
+cmd_uninstall() {
+  load_env
+  [ -n "$STACK_ID" ] || die "no STACK_ID in .env, so there's nothing labelled as this install's"
+  local yes="" ans id src name c link
+  [ "${1:-}" = "--yes" ] && yes=1
+
+  say "Uninstall ($ROOT)"
+  echo "  This removes everything labelled obsidian-server-stack.id=$STACK_ID:"
+  docker ps -a --filter "label=$LABEL.id=$STACK_ID" --format '{{.Names}}' | sort | sed 's/^/    /'
+  echo "  plus this install's network, built images and obsidian-stack command(s)."
+  echo "  Notes in vaults/ and settings in state/ and .env are kept unless you choose otherwise."
+  if [ -z "$yes" ]; then
+    ask "  Continue? [y/N] " ans
+    case "$ans" in [yY]*) ;; *) echo "  Nothing removed."; return ;; esac
+  fi
+
+  # each vault's sync, including its local sync database volume
+  if docker image inspect "${P}obsidian-api:local" >/dev/null 2>&1; then
+    while IFS=$'\t' read -r id src name; do
+      [ -n "$id" ] && [ -n "$(sync_dir "$src")" ] && [ -f "state/$id/sync.env" ] || continue
+      vc "$id" "$src" down -v --remove-orphans >/dev/null 2>&1 && ok "removed sync for '$id'"
+    done <<< "$(reg list 2>/dev/null)"
+  fi
+
+  # the shared CouchDB: its databases are the only copy on this server of
+  # the LiveSync vaults, so they're kept unless asked
+  if [ -f sync/couchdb/.env ] && [ -n "$(ours couchdb)$(ours couchdb-init)" ]; then
+    ans=""
+    [ -z "$yes" ] && ask "  Also delete the CouchDB databases? Devices keep their own copies. [y/N] " ans
+    case "$ans" in
+      [yY]*) ( cd sync/couchdb && docker compose down -v >/dev/null 2>&1 ); ok "removed CouchDB and its databases" ;;
+      *) ( cd sync/couchdb && docker compose down >/dev/null 2>&1 ); ok "removed CouchDB (databases kept in its Docker volume)" ;;
+    esac
+  fi
+
+  docker compose down --rmi local --remove-orphans >/dev/null 2>&1 && ok "removed obsidian-api and obsidian-mcp"
+
+  # anything still labelled as ours (e.g. sync for a vault whose settings
+  # were deleted by hand)
+  for c in $(docker ps -aq --filter "label=$LABEL.id=$STACK_ID"); do
+    docker rm -f "$c" >/dev/null && ok "removed leftover container $c"
+  done
+  docker network rm "${P}obsidian-livesync" >/dev/null 2>&1 && ok "removed network ${P}obsidian-livesync"
+  docker rmi "${P}obsidian-official-sync:local" "${P}obsidian-git-sync:local" >/dev/null 2>&1 || true
+
+  for link in /usr/local/bin/*; do
+    [ -L "$link" ] && [ "$(readlink -f "$link")" = "$ROOT/obsidian-stack" ] || continue
+    rm -f "$link" 2>/dev/null && ok "removed command $(basename "$link")"
+  done
+
+  if [ -z "$yes" ]; then
+    echo
+    echo "  Notes are still in $ROOT/vaults/ (sync settings in state/, secrets in .env)."
+    ask "  Type 'delete' to delete those too, or press Enter to keep them: " ans
+    if [ "$ans" = delete ]; then
+      rm -rf vaults state .env sync/couchdb/.env
+      ok "deleted vaults/, state/ and .env"
+    else
+      ok "kept vaults/, state/ and .env"
+    fi
+  fi
+  say "Uninstalled"
+}
+
 cmd_endpoint() {
   require_installed
   echo "  MCP endpoint:  http://localhost:${MCP_PORT:-7002}/mcp"
@@ -746,6 +812,7 @@ case "$cmd" in
   logs) cmd_logs "$@" ;;
   restart) cmd_restart "$@" ;;
   update) cmd_update ;;
+  uninstall) cmd_uninstall "$@" ;;
   endpoint) cmd_endpoint "$@" ;;
   link) cmd_link "$@" ;;
   help|-h|--help) usage ;;
