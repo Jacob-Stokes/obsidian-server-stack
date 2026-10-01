@@ -68,10 +68,23 @@ await startMcp({
   port: PORT,
   bearerToken: MCP_BEARER_TOKEN,
   oauth,
-  instructions:
-    "Server-side Obsidian vaults. Call obsidian_list_vaults first and pass an explicit vault_id to every other tool. " +
-    "Read Home.md when present before choosing where to write. " +
-    "Prefer focused tools over deprecated compatibility tools; use expected_hash for read-modify-write work and dry_run for broad changes.",
+  // Worked out when each client connects, so a single-vault server can tell
+  // the agent it doesn't need to look anything up first.
+  instructions: async () => {
+    const general =
+      "Read Home.md when present before choosing where to write. " +
+      "Prefer focused tools over deprecated compatibility tools; use expected_hash for read-modify-write work and dry_run for broad changes.";
+    try {
+      const vaults = await connections.list();
+      if (vaults.length === 1) {
+        const [v] = vaults;
+        return `Server-side Obsidian vault. This server has one vault, "${v.name}" (id: ${v.id}); vault_id can be omitted from every tool. ${general}`;
+      }
+      return `Server-side Obsidian vaults. This server has ${vaults.length} vaults: call obsidian_list_vaults, then pass vault_id to every other tool. ${general}`;
+    } catch {
+      return `Server-side Obsidian vaults. Call obsidian_list_vaults, then pass vault_id to the other tools (it can be omitted when there is only one vault). ${general}`;
+    }
+  },
   tools: obsidianTools(connections),
   onBackendError: (e) => {
     if (e instanceof ObsidianError) {

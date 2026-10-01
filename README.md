@@ -91,7 +91,7 @@ Version 0.1 served a single vault from `./vault`. To move to 0.2:
 
 ## Tools
 
-All tool names start with `obsidian_`. Call `list_vaults` first: every other tool takes a required `vault_id`.
+All tool names start with `obsidian_`. Every tool except `list_vaults` takes a `vault_id`. With a single vault it can be omitted, and the server says so when a client connects; with several, an omitted id is refused with the list of vaults.
 
 | Group | Tools |
 |---|---|

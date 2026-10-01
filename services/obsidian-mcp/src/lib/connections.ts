@@ -34,10 +34,25 @@ export class VaultConnections {
     );
   }
 
-  async context(id: string): Promise<ToolContext> {
-    if (!/^[a-z][a-z0-9-]{0,62}$/.test(id)) throw new Error("Choose vault_id from obsidian_list_vaults.");
-    const vault = (await this.list()).find((candidate) => candidate.id === id);
-    if (!vault) throw new Error("Vault connection is unavailable or not permitted.");
+  // With no id, use the only vault if there is exactly one. With several,
+  // refuse rather than guess, and name them so the caller can retry without
+  // a separate list call. Re-checked on every call, so adding a second vault
+  // mid-session makes id-less calls fail closed instead of picking one.
+  async context(id?: string): Promise<ToolContext> {
+    const vaults = await this.list();
+    let vault: VaultConnection | undefined;
+    if (id === undefined || id === "") {
+      if (vaults.length === 1) vault = vaults[0];
+      else if (vaults.length === 0) throw new Error("This server has no vaults yet. Add one with install.sh.");
+      else {
+        const options = vaults.map((v) => `${v.id} (${v.name})`).join(", ");
+        throw new Error(`This server has ${vaults.length} vaults, so vault_id is required: ${options}.`);
+      }
+    } else {
+      if (!/^[a-z][a-z0-9-]{0,62}$/.test(id)) throw new Error("Choose vault_id from obsidian_list_vaults.");
+      vault = vaults.find((candidate) => candidate.id === id);
+      if (!vault) throw new Error("Vault connection is unavailable or not permitted.");
+    }
     const policy = new VaultPolicy(vault.scopePath);
     return {
       client: new ObsidianClient(this.baseUrl, this.apiKey, { id: vault.id, scopePath: vault.scopePath }),

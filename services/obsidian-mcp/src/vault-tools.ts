@@ -64,7 +64,7 @@ export function obsidianTools(connections: VaultConnections): ToolRegistration[]
       def: {
         name: "obsidian_list_vaults",
         description:
-          "List the vaults this server can reach (id, name, sync source). Optionally find one by name or id. Use its id as vault_id for every other tool; disabled or missing vaults are omitted.",
+          "List the vaults this server can reach (id, name, sync source). Optionally find one by name or id. Pass the id as vault_id to the other tools; it can be left out when there is exactly one vault. Disabled or missing vaults are omitted.",
         inputSchema: z.object({ query: z.string().max(120).optional() }),
         annotations: READ_ONLY
       },

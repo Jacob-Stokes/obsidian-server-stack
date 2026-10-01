@@ -98,7 +98,7 @@ export interface StartMcpOptions {
    * Not every client surfaces this to the model, but it's the spec-correct
    * place to put it (vs. hoping the model decides to call a tool first).
    */
-  instructions?: string;
+  instructions?: string | (() => string | Promise<string>);
 }
 
 function json(res: ServerResponse, status: number, body: any, headers: Record<string, string> = {}) {
@@ -181,10 +181,13 @@ export async function startMcp(opts: StartMcpOptions): Promise<void> {
     );
   }
 
-  const buildServer = (): Server => {
+  // Instructions can be computed per session (e.g. from live server state),
+  // so each new client sees what's true when it connects.
+  const buildServer = async (): Promise<Server> => {
+    const text = typeof instructions === "function" ? await instructions() : instructions;
     const server = new Server(
       { name, version },
-      { capabilities: { tools: {} }, ...(instructions ? { instructions } : {}) },
+      { capabilities: { tools: {} }, ...(text ? { instructions: text } : {}) },
     );
 
     server.setRequestHandler(ListToolsRequestSchema, async () => ({
@@ -268,7 +271,7 @@ export async function startMcp(opts: StartMcpOptions): Promise<void> {
         transport.onclose = () => {
           if (transport.sessionId) streamableTransports.delete(transport.sessionId);
         };
-        const server = buildServer();
+        const server = await buildServer();
         await server.connect(transport);
         await transport.handleRequest(req, res);
         return;
@@ -282,7 +285,7 @@ export async function startMcp(opts: StartMcpOptions): Promise<void> {
       const transport = new SSEServerTransport("/message", res);
       sseTransports.set(transport.sessionId, transport);
       req.on("close", () => sseTransports.delete(transport.sessionId));
-      const server = buildServer();
+      const server = await buildServer();
       await server.connect(transport);
       return;
     }

@@ -39,15 +39,18 @@ function backend(t: test.TestContext) {
   };
 }
 
-test("one MCP inventory advertises required vault selection for every content tool", async (t) => {
+test("one MCP inventory offers vault selection on every content tool", async (t) => {
   const { connections } = backend(t);
   const tools = obsidianTools(connections);
   assert.equal(new Set(tools.map((tool) => tool.def.name)).size, 20);
   assert.equal(tools.filter((tool) => tool.def.name === "obsidian_list_vaults").length, 1);
   for (const tool of tools) {
     if (tool.def.name === "obsidian_list_vaults") continue;
-    assert.ok(zodToJsonSchema(tool.def.inputSchema).required.includes("vault_id"), tool.def.name);
-    assert.equal(tool.def.inputSchema.safeParse({ path: "Research/Test.md" }).success, false);
+    const schema = zodToJsonSchema(tool.def.inputSchema);
+    assert.ok(schema.properties.vault_id, tool.def.name);
+    // optional, so a single-vault server needs no lookup first
+    assert.ok(!schema.required.includes("vault_id"), tool.def.name);
+    assert.equal(tool.def.inputSchema.safeParse({ vault_id: "../escape", path: "Research/Test.md" }).success, false);
   }
   assert.deepEqual(
     (await connections.list("research")).map((vault) => vault.id),
@@ -80,4 +83,21 @@ test("same-path writes choose explicit contexts; scope and revocation prevent la
     (await connections.list()).map((vault) => vault.id),
     ["two"]
   );
+});
+
+test("an omitted vault_id uses the only vault, and is refused with the choices when there are several", async (t) => {
+  const { connections, notes, revoke } = backend(t);
+  const tools = obsidianTools(connections);
+  const write = tools.find((tool) => tool.def.name === "obsidian_write_note")!;
+
+  // two vaults: refuse, naming both so the caller can retry directly
+  await assert.rejects(connections.context(), /2 vaults, so vault_id is required: one \(Research\), two \(Notes\)/);
+  await assert.rejects(write.handler(write.def.inputSchema.parse({ path: "Inbox.md", content: "x" })), /vault_id is required/);
+  assert.equal(notes.get("one")!.size + notes.get("two")!.size, 0);
+
+  // down to one vault: id-less calls go to it
+  revoke();
+  assert.equal((await connections.context()).client !== undefined, true);
+  await write.handler(write.def.inputSchema.parse({ path: "Inbox.md", content: "only vault" }));
+  assert.equal(notes.get("two")!.get("Inbox.md"), "only vault");
 });
