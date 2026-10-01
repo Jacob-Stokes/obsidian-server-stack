@@ -28,12 +28,30 @@ Requires Linux with Docker (Compose v2), `openssl` and `curl`, plus `ssh-keygen`
 
 The installer generates secrets, starts the core containers, adds a first vault, and offers to put an `obsidian-stack` command on the PATH for managing the install afterwards. Once finished, the MCP endpoint is at `http://localhost:7002/mcp`, with its bearer token in `.env`.
 
-To run a second instance on the same machine, set a prefix and port before running `./install.sh`:
+## How it works
 
-```bash
-cp .env.example .env
-sed -i 's/^INSTANCE_PREFIX=.*/INSTANCE_PREFIX=test-/; s/^MCP_PORT=.*/MCP_PORT=7102/' .env
-```
+One install serves any number of vaults. Each vault is a folder of markdown files, `vaults/<id>/`, where the id comes from its name (`Work Notes` becomes `work-notes`). The list of vaults is `vaults/.registry.json`, managed by `obsidian-stack`.
+
+Two containers serve every vault:
+
+| Container | Job |
+|---|---|
+| `obsidian-mcp` | MCP server, the endpoint clients connect to. One bearer token covers every vault in the install. |
+| `obsidian-api` | REST API over the vault folders. Only `obsidian-mcp` can reach it. Each request names its vault, and the vault list is re-read on every request, so vaults can be added or removed without a restart. |
+
+MCP clients call `obsidian_list_vaults` to see the vaults, then pass a `vault_id` to every other tool. With a single vault the id can be left out; the server says which case applies when a client connects.
+
+Each vault stays in sync with other devices on its own, with its own sync source, its own containers, and its own settings and credentials in `state/<id>/`:
+
+| Source | Containers per vault | On other devices | Cost |
+|---|---|---|---|
+| Self-hosted LiveSync | `obsidian-<id>-livesync`, plus one shared `obsidian-couchdb` | [Self-hosted LiveSync](https://github.com/vrtmrz/obsidian-livesync) plugin, database `<id>` | Free |
+| Existing LiveSync server | `obsidian-<id>-livesync` | An existing LiveSync setup, joined via Setup URI | Free |
+| Official Obsidian Sync | `obsidian-<id>-official-sync` ([obsidian-headless](https://github.com/obsidianmd/obsidian-headless)) | Obsidian Sync | [Subscription](https://obsidian.md/sync) |
+| Git | `obsidian-<id>-git-sync` | [obsidian-git](https://github.com/Vinzent03/obsidian-git) plugin | Free |
+| None | | `vaults/<id>/` is managed manually | Free |
+
+Because credentials are per vault, one install can mix sources and accounts: two vaults on different Obsidian Sync accounts, one on git, another joining a LiveSync server elsewhere, and so on. Self-hosted LiveSync vaults share one CouchDB server, with a database per vault. Obsidian mobile needs HTTPS to reach it; `sync/couchdb` has optional [Caddy](https://caddyserver.com), [Tailscale](https://tailscale.com) and [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/) setups for that.
 
 ## Managing
 
@@ -51,34 +69,20 @@ sed -i 's/^INSTANCE_PREFIX=.*/INSTANCE_PREFIX=test-/; s/^MCP_PORT=.*/MCP_PORT=71
 | `obsidian-stack endpoint [--show-token]` | MCP URL and bearer token |
 | `obsidian-stack link [name]` | Add the command to `/usr/local/bin` |
 
-The command always acts on the install it belongs to: the folder it lives in (following the link on the PATH), or one given with `--dir` or `$OBSIDIAN_STACK_DIR`. Every container the stack creates carries a Docker label with the install's `STACK_ID` from `.env`, and the command finds containers by that label rather than by name, so other Obsidian containers on the machine are never affected. A second install with an `INSTANCE_PREFIX` gets its own command, e.g. `obsidian-stack-test`.
+The command always acts on the install it belongs to: the folder it lives in (following the link on the PATH), or one given with `--dir` or `$OBSIDIAN_STACK_DIR`. Every container the stack creates carries a Docker label with the install's `STACK_ID` from `.env`, and the command finds containers by that label rather than by name, so other Obsidian containers on the machine are never affected.
 
-## Vaults
+## Running a second instance
 
-Each vault has a short id (from its name, e.g. `Work Notes` becomes `work-notes`), and its notes live in `vaults/<id>/`. The list of vaults is `vaults/.registry.json`, managed by the installer. Each vault syncs on its own:
+Multiple vaults and multiple sync accounts fit in one install. A second, separate install is for vaults that need their own MCP endpoint and token, for example one set for one person or agent and another set for another, since a token sees every vault in its install. It's also a way to try a new version alongside a working one.
 
-| Source | Containers per vault | On other devices | Cost |
-|---|---|---|---|
-| Self-hosted LiveSync | `obsidian-<id>-livesync`, plus one shared `obsidian-couchdb` | [Self-hosted LiveSync](https://github.com/vrtmrz/obsidian-livesync) plugin, database `<id>` | Free |
-| Existing LiveSync server | `obsidian-<id>-livesync` | An existing LiveSync setup, joined via Setup URI | Free |
-| Official Obsidian Sync | `obsidian-<id>-official-sync` ([obsidian-headless](https://github.com/obsidianmd/obsidian-headless)) | Obsidian Sync | [Subscription](https://obsidian.md/sync) |
-| Git | `obsidian-<id>-git-sync` | [obsidian-git](https://github.com/Vinzent03/obsidian-git) plugin | Free |
-| None | | `vaults/<id>/` is managed manually | Free |
+Give the second install its own prefix and port before running `./install.sh`:
 
-Self-hosted LiveSync vaults share one CouchDB server, with a database per vault. Obsidian mobile needs HTTPS to reach it; `sync/couchdb` has optional [Caddy](https://caddyserver.com), [Tailscale](https://tailscale.com) and [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/) setups for that.
+```bash
+cp .env.example .env
+sed -i 's/^INSTANCE_PREFIX=.*/INSTANCE_PREFIX=test-/; s/^MCP_PORT=.*/MCP_PORT=7102/' .env
+```
 
-A vault's sync settings and credentials live in `state/<id>/`.
-
-## Containers
-
-Always installed:
-
-| Container | Job |
-|---|---|
-| `obsidian-mcp` | MCP server. The endpoint MCP clients connect to. |
-| `obsidian-api` | REST API over the vaults' files. Only `obsidian-mcp` can reach it. |
-
-Plus the sync containers for each vault, listed above.
+Its containers, networks and volumes get the prefix, and its command is named after it, e.g. `obsidian-stack-test`. If both use self-hosted LiveSync, the second also needs a different `COUCHDB_PORT` in `sync/couchdb/.env`.
 
 ## Reaching the MCP
 
@@ -98,14 +102,6 @@ To update, run `obsidian-stack update`. The `.env`, vaults and sync settings are
 To remove one vault, run `obsidian-stack remove <id>`. Its notes stay in `vaults/<id>/` and its settings in `state/<id>/` until deleted by hand.
 
 To uninstall everything, run `docker compose down` in the repo root, `docker compose down` in `sync/couchdb` if any vault used self-hosted LiveSync, and `docker compose -p obsidian-<id> down` for each vault's sync. Notes remain in `vaults/` as plain markdown. Adding `-v` to the CouchDB `down` deletes its databases; other devices keep their copies.
-
-### Upgrading from 0.1
-
-Version 0.1 served a single vault from `./vault`. To move to 0.2:
-
-1. Stop the old sync: `docker compose down` in whichever of `sync/self-hosted-livesync`, `sync/livesync-existing`, `sync/official-obsidian-sync` or `sync/git-sync` was in use (from the 0.1 checkout, before pulling).
-2. `git pull`, then run `./install.sh` and add a vault with the same sync source. For self-hosted LiveSync, the database is new and devices need pointing at it.
-3. Move the old notes out of `./vault` (into the new `vaults/<id>/` for a vault with no sync, or let the sync bring them back from the other devices).
 
 ## Tools
 

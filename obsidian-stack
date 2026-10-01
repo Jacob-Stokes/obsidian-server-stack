@@ -506,13 +506,6 @@ cmd_install() {
   command -v curl >/dev/null 2>&1 || die "curl is required."
 
   say "Setting up the core stack"
-  # The 0.1 layout kept a single vault in ./vault. Adopting it automatically
-  # would mean stopping and rewiring its sync containers, so ask instead.
-  if [ -d vault ] && [ -n "$(ls -A vault 2>/dev/null)" ] && [ ! -f vaults/.registry.json ]; then
-    die "this looks like a 0.1 install with notes in ./vault. Version 0.2 keeps
-  each vault in vaults/<id>/. See \"Upgrading from 0.1\" in README.md, then
-  re-run this script."
-  fi
   if [ ! -f .env ]; then
     cp .env.example .env
     ok "created .env from .env.example"
