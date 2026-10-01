@@ -21,6 +21,13 @@ is the same project's own official headless CLI
 in the same repo, same MIT license), referenced directly rather than
 rebuilt, since its authors already publish it.
 
+`obsidian-stack` makes Setup URIs for self-hosted LiveSync vaults with the
+same project's generator,
+[`utils/flyio/generate_setupuri.ts`](https://github.com/vrtmrz/obsidian-livesync/blob/main/utils/flyio/generate_setupuri.ts)
+(MIT), fetched at a pinned commit and run in the official
+[`denoland/deno`](https://hub.docker.com/r/denoland/deno) image (MIT) when a
+URI is needed. Neither is included in this repository.
+
 ## sync/official-obsidian-sync/
 
 Original Dockerfile and entrypoint. The image installs

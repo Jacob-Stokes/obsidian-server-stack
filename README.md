@@ -45,13 +45,34 @@ Each vault stays in sync with other devices on its own, with its own sync source
 
 | Source | Containers per vault | On other devices | Cost |
 |---|---|---|---|
-| Self-hosted LiveSync | `obsidian-<id>-livesync`, plus one shared `obsidian-couchdb` | [Self-hosted LiveSync](https://github.com/vrtmrz/obsidian-livesync) plugin, database `<id>` | Free |
+| Self-hosted LiveSync | `obsidian-<id>-livesync`, plus one shared `obsidian-couchdb` | [Self-hosted LiveSync](https://github.com/vrtmrz/obsidian-livesync) plugin, set up from a generated Setup URI | Free |
 | Existing LiveSync server | `obsidian-<id>-livesync` | An existing LiveSync setup, joined via Setup URI | Free |
 | Official Obsidian Sync | `obsidian-<id>-official-sync` ([obsidian-headless](https://github.com/obsidianmd/obsidian-headless)) | Obsidian Sync | [Subscription](https://obsidian.md/sync) |
 | Git | `obsidian-<id>-git-sync` | [obsidian-git](https://github.com/Vinzent03/obsidian-git) plugin | Free |
 | None | | `vaults/<id>/` is managed manually | Free |
 
-Because credentials are per vault, one install can mix sources and accounts: two vaults on different Obsidian Sync accounts, one on git, another joining a LiveSync server elsewhere, and so on. Self-hosted LiveSync vaults share one CouchDB server, with a database per vault. Obsidian mobile needs HTTPS to reach it; `sync/couchdb` has optional [Caddy](https://caddyserver.com), [Tailscale](https://tailscale.com) and [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/) setups for that.
+Because credentials are per vault, one install can mix sources and accounts: two vaults on different Obsidian Sync accounts, one on git, another joining a LiveSync server elsewhere, and so on.
+
+### Self-hosted LiveSync
+
+Self-hosted LiveSync vaults share one CouchDB server, with a database per vault. Each vault is end-to-end encrypted, with obfuscated file paths, so CouchDB only holds ciphertext.
+
+Devices are set up with a Setup URI, made by the LiveSync project's own generator. Adding the vault prints one, with its passphrase, and `obsidian-stack setup-uri <id>` prints another at any time. The URIs don't expire, any number of devices can use the same one, and every URI for a vault carries the same encryption passphrase and settings, so a device added months later joins the same vault. On each device: install the plugin, choose "Use the copied setup URI" (or open the URI on the device), and enter the passphrase. Devices sync every 60 seconds by default; switching the plugin's sync mode to LiveSync makes it real time. The server's own copy always runs in LiveSync mode, so MCP writes reach CouchDB within seconds.
+
+### Phones and HTTPS
+
+Obsidian on iOS and Android only connects to servers over `https://`. Both operating systems block plain `http://` from the app, and the block applies to every network, including a Tailscale tailnet or a home Wi-Fi network. Obsidian desktop accepts `http://`.
+
+This matters only for self-hosted LiveSync, the one source where devices connect to this server:
+
+| Source | What devices connect to | HTTPS needed on this server |
+|---|---|---|
+| Self-hosted LiveSync | This server's CouchDB (port 5984) | Yes, for phones |
+| Existing LiveSync server | That server | No (that server's own address) |
+| Official Obsidian Sync | Obsidian's servers, already HTTPS | No |
+| Git | The git host, already HTTPS or SSH | No |
+
+To give CouchDB an HTTPS address, `sync/couchdb` has optional profiles for [Tailscale](https://tailscale.com) (an `https://<name>.<tailnet>.ts.net` address, private to the tailnet), [Caddy](https://caddyserver.com) (a domain with automatic certificates) and [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/) (a domain, no open ports); see [sync/couchdb](sync/couchdb/README.md). An existing reverse proxy pointed at port 5984 works too. The address devices use is asked for when the first self-hosted LiveSync vault is added and goes into each Setup URI; `obsidian-stack setup-uri <id> --url` changes it and prints a new URI.
 
 ## Managing
 
@@ -63,6 +84,7 @@ Because credentials are per vault, one install can mix sources and accounts: two
 | `obsidian-stack status` | Core containers, and each vault's sync state and note count |
 | `obsidian-stack vaults` | List vaults |
 | `obsidian-stack add` / `remove [id]` | Add a vault, or remove one (its files are kept) |
+| `obsidian-stack setup-uri <id> [--url]` | Setup URI for a self-hosted LiveSync vault's devices; `--url` changes the address they connect to |
 | `obsidian-stack logs <id\|api\|mcp\|couchdb> [-f]` | Logs for a vault's sync or a core container |
 | `obsidian-stack restart <id\|api\|mcp\|couchdb\|all>` | Restart one part, or everything |
 | `obsidian-stack update` | `git pull`, rebuild, and restart everything on the new version |

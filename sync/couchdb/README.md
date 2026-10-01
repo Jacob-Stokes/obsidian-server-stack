@@ -6,7 +6,7 @@ The CouchDB setup is adapted from the LiveSync project's own `docker/` folder. S
 
 ## Setup
 
-`obsidian-stack` starts this the first time a vault chooses self-hosted LiveSync, generates the password into `.env`, creates the vault's database and prints the settings for the plugin. To run it by hand:
+`obsidian-stack` starts this the first time a vault chooses self-hosted LiveSync, generates the password into `.env`, creates the vault's database, and prints a Setup URI for devices (`obsidian-stack setup-uri <id>` prints another). To run CouchDB by hand:
 
 ```bash
 cp .env.example .env          # then set COUCHDB_PASSWORD, and STACK_ID as in the root .env
@@ -14,11 +14,11 @@ docker network create obsidian-livesync
 docker compose up -d
 ```
 
-On each device, point the LiveSync plugin at `http://<server>:5984` with the username and password from `.env` and the vault's id as the database name.
+Vaults are configured through Setup URIs rather than by entering the address, username and password on each device, so that every device and the server's worker share the vault's encryption passphrase and settings. `COUCHDB_DEVICE_URL` in `.env` is the address put into device URIs.
 
 ## HTTPS
 
-Obsidian mobile only connects to LiveSync over HTTPS. Three optional profiles provide it:
+Obsidian on iOS and Android refuses `http://` addresses on every network, including a tailnet, so phones need CouchDB behind HTTPS. Three optional profiles provide it:
 
 | Profile | Needs | Start with |
 |---|---|---|
@@ -26,7 +26,7 @@ Obsidian mobile only connects to LiveSync over HTTPS. Three optional profiles pr
 | `tailscale` | A Tailscale auth key; no domain required | `docker compose --profile tailscale up -d` |
 | `cloudflare` | A Cloudflare Tunnel token | `docker compose --profile cloudflare up -d` |
 
-Each profile's settings are in `.env.example`.
+Each profile's settings are in `.env.example`. Once one is running, `obsidian-stack setup-uri <id> --url` sets the HTTPS address and prints a new Setup URI for each vault.
 
 ## Removing
 

@@ -4,12 +4,11 @@
 # VM, no Electron. Runs as uid 1000 (set via `user:` in compose); permissions
 # on /vault and /data are fixed up beforehand by the vault-sync-init one-shot.
 #
-# One worker per vault, configured one of two ways:
-#   self-hosted     — settings written from COUCHDB_* env vars (from the
-#                     vault's sync.env), pointing at the shared CouchDB in
-#                     sync/couchdb and a database named after the vault.
-#   existing server — settings imported once from a Setup URI (`setup` mode
-#                     below), for a LiveSync server you already use.
+# One worker per vault, configured once from a Setup URI (`setup` mode below):
+#   self-hosted     — a URI obsidian-stack generates for the shared CouchDB in
+#                     sync/couchdb, database named after the vault, with
+#                     end-to-end encryption; devices get a matching URI.
+#   existing server — the URI from a LiveSync setup already in use.
 set -e
 
 VAULT_PATH=/vault
@@ -29,32 +28,22 @@ if [ "${1:-}" = "setup" ]; then
   # in $SETTINGS, which is all the daemon needs from then on.
   : "${SETUP_URI:?SETUP_URI is required for setup}"
   rm -f "$SETTINGS"
-  exec livesync-cli --settings "$SETTINGS" setup "$SETUP_URI"
+  livesync-cli --settings "$SETTINGS" setup "$SETUP_URI"
+  # Setup URIs usually carry periodic sync (every 60s, batched saves), a
+  # device-local choice. This copy serves the MCP, so it runs in LiveSync
+  # mode: changes either way within seconds. Other devices are unaffected.
+  node -e '
+    const fs = require("fs"), f = process.argv[1];
+    const s = JSON.parse(fs.readFileSync(f, "utf8"));
+    Object.assign(s, { liveSync: true, periodicReplication: false, batchSave: false, syncOnStart: true });
+    fs.writeFileSync(f, JSON.stringify(s, null, 2));
+  ' "$SETTINGS"
+  exit 0
 fi
 
 if [ ! -f "$SETTINGS" ]; then
-  if [ -z "${COUCHDB_USER:-}" ] || [ -z "${COUCHDB_PASSWORD:-}" ]; then
-    echo "Not configured yet. Run the one-off setup with a Setup URI first (see README)." >&2
-    exit 1
-  fi
-  echo "Writing sync settings for database '${COUCHDB_DATABASE:-obsidiannotes}'..."
-  ENCRYPT=false
-  [ -n "${VAULT_ENCRYPT_PASSPHRASE:-}" ] && ENCRYPT=true
-  cat > "$SETTINGS" <<EOF
-{
-  "couchDB_URI": "${COUCHDB_URI:-http://couchdb:5984}",
-  "couchDB_USER": "${COUCHDB_USER}",
-  "couchDB_PASSWORD": "${COUCHDB_PASSWORD}",
-  "couchDB_DBNAME": "${COUCHDB_DATABASE:-obsidiannotes}",
-  "liveSync": true,
-  "syncOnSave": true,
-  "syncOnStart": true,
-  "encrypt": ${ENCRYPT},
-  "passphrase": "${VAULT_ENCRYPT_PASSPHRASE:-}",
-  "usePluginSync": false,
-  "isConfigured": true
-}
-EOF
+  echo "Not configured yet: import a Setup URI first (obsidian-stack does this; see README)." >&2
+  exit 1
 fi
 
 echo "Starting continuous vault <-> CouchDB sync..."

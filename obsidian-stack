@@ -27,6 +27,9 @@ Usage: obsidian-stack [--dir PATH] [command]
   vaults              list vaults
   add                 add a vault
   remove [ID]         remove a vault (its files are kept)
+  setup-uri [ID] [--url]
+                      Setup URI for a self-hosted LiveSync vault's devices
+                      (--url: change the address devices connect to)
   logs TARGET [-f]    logs for a vault id, or api | mcp | couchdb
   restart TARGET      restart a vault's sync, api | mcp | couchdb, or all
   update              git pull, rebuild and restart everything
@@ -223,26 +226,128 @@ setup_none() {
   ok "no sync — put files in vaults/$1/ however you like (rsync, Syncthing, ...)"
 }
 
+# --- Setup URIs (self-hosted LiveSync) ---------------------------------------
+#
+# Self-hosted LiveSync vaults are configured entirely by Setup URIs, made with
+# the LiveSync project's own generator, so the server's worker and every
+# device get identical settings: end-to-end encryption, path obfuscation and
+# the vault's document-id key. Two URIs are made from the same settings, one
+# with the CouchDB address as the worker sees it, one with the address
+# devices use. The encryption passphrase and the id recovery code are kept in
+# state/<id>/sync.env, so device URIs can be made again at any time.
+
+# Pinned: the generator's Setup URI format has to match the CLI image's.
+GEN_URL=https://raw.githubusercontent.com/vrtmrz/obsidian-livesync/0f6e32dc1b42e85b9d8884d54742706c88036a37/utils/flyio/generate_setupuri.ts
+GEN_IMAGE=denoland/deno:2.4.5
+
+# gen_uri ID HOSTNAME — runs the generator; sets URI, URI_PASS and RECOVERY
+gen_uri() {
+  local id="$1" host="$2" f="state/$1/sync.env" out vol="${P}obsidian-deno-cache"
+  docker volume inspect "$vol" >/dev/null 2>&1 \
+    || docker volume create --label "$LABEL.id=$STACK_ID" "$vol" >/dev/null
+  # shellcheck disable=SC1090
+  out="$( ( source "$f"
+    docker run --rm -v "$vol:/deno-dir" -e DENO_DIR=/deno-dir \
+      -e hostname="$host" -e username="$(couchdb_env COUCHDB_USER)" \
+      -e password="$(couchdb_env COUCHDB_PASSWORD)" -e database="$id" \
+      -e passphrase="$VAULT_ENCRYPT_PASSPHRASE" -e id_recovery_code="${LIVESYNC_ID_RECOVERY_CODE:-}" \
+      -e uri_mode=persistent "$GEN_IMAGE" run -A "$GEN_URL" </dev/null 2>&1 ) )" \
+    || { echo "$out" | tail -5 >&2; die "the Setup URI generator failed"; }
+  URI="$(echo "$out" | grep -m1 '^obsidian://setuplivesync?settings=')"
+  URI_PASS="$(echo "$out" | sed -n 's/^Your passphrase for the Setup URI is: //p')"
+  RECOVERY="$(echo "$out" | sed -n 's/^ID recovery code: //p')"
+  [ -n "$URI" ] && [ -n "$URI_PASS" ] || { echo "$out" | tail -5 >&2; die "unexpected output from the Setup URI generator"; }
+}
+
+worker_configured() {
+  vc "$1" livesync run --rm -T --entrypoint sh livesync -c 'test -f /data/.livesync/settings.json' </dev/null >/dev/null 2>&1
+}
+
+# Configures the server's worker for a self-hosted vault from its own URI.
+import_server_uri() {
+  local id="$1" f="state/$1/sync.env"
+  # shellcheck disable=SC1090
+  [ -n "$(source "$f"; echo "${VAULT_ENCRYPT_PASSPHRASE:-}")" ] \
+    || set_env "$f" VAULT_ENCRYPT_PASSPHRASE "$(openssl rand -base64 24 | tr '+/' '-_' | tr -d '=')"
+  gen_uri "$id" "http://${P}obsidian-couchdb:5984"
+  [ -n "$RECOVERY" ] && set_env "$f" LIVESYNC_ID_RECOVERY_CODE "$RECOVERY"
+  printf '%s\n' "$URI_PASS" | vc "$id" livesync run --rm -T -e SETUP_URI="$URI" livesync setup >/dev/null 2>&1 \
+    || die "couldn't configure the LiveSync worker for '$id'"
+  ok "configured the server's worker (end-to-end encrypted)"
+}
+
+device_url() {
+  local cur ans
+  cur="$(couchdb_env COUCHDB_DEVICE_URL)"
+  if [ -z "$cur" ] || [ -n "${1:-}" ]; then
+    [ -n "$cur" ] || cur="http://$(hostname -I 2>/dev/null | awk '{print $1}'):$(couchdb_env COUCHDB_PORT)"
+    cat >&2 <<EOF
+
+  The address devices use to reach CouchDB goes into their Setup URI.
+  Desktop Obsidian accepts http://. Obsidian on iOS and Android only
+  connects over https://, even across Tailscale or a home network, so
+  phones need an HTTPS address: see "Phones and HTTPS" in the README.
+  (It can be changed later with: $ME setup-uri <vault> --url)
+
+EOF
+    ask "  Device address [$cur]: " ans
+    ( cd sync/couchdb && set_env .env COUCHDB_DEVICE_URL "${ans:-$cur}" force )
+  fi
+  couchdb_env COUCHDB_DEVICE_URL
+}
+
+# Prints a Setup URI for devices. Not stored: it can always be made again.
+print_device_uri() {
+  local id="$1" url="$2"
+  gen_uri "$id" "$url"
+  cat <<EOF
+
+  Setup URI for '$id' (devices connect to $url):
+
+$URI
+
+  Its passphrase:  $URI_PASS
+
+  On each device: install the Self-hosted LiveSync plugin, then use
+  "Use the copied setup URI" (or open the URI on the device) and enter the
+  passphrase. Encryption and every other setting come from the URI. The URI
+  doesn't expire and works on any number of devices; another can be made at
+  any time with: $ME setup-uri $id
+EOF
+  [[ "$url" == http://* ]] && warn "this address is http://, which Obsidian mobile refuses (desktop only)"
+  return 0
+}
+
 setup_livesync() {
-  local id="$1" f="state/$1/sync.env" pass
+  local id="$1" f="state/$1/sync.env"
   ensure_couchdb
   create_db "$id"
-  set_env "$f" COUCHDB_URI "http://${P}obsidian-couchdb:5984"
-  set_env "$f" COUCHDB_USER "$(couchdb_env COUCHDB_USER)"
-  set_env "$f" COUCHDB_PASSWORD "$(couchdb_env COUCHDB_PASSWORD)"
-  set_env "$f" COUCHDB_DATABASE "$id"
-  echo "  If you'll turn on end-to-end encryption in the LiveSync plugin for this"
-  echo "  vault, enter the passphrase you'll use there (blank for none)."
-  ask_secret "  Encryption passphrase: " pass
-  [ -n "$pass" ] && set_env "$f" VAULT_ENCRYPT_PASSPHRASE "$pass"
+  if worker_configured "$id"; then
+    ok "already configured, reusing existing settings"
+  else
+    import_server_uri "$id"
+  fi
   vc "$id" livesync up -d
   ok "LiveSync worker is up"
-  echo "  On each device, point the Self-hosted LiveSync plugin at:"
-  echo "    URI:       http://<this server>:$(couchdb_env COUCHDB_PORT)"
-  echo "    Username:  $(couchdb_env COUCHDB_USER)"
-  echo "    Password:  COUCHDB_PASSWORD in sync/couchdb/.env"
-  echo "    Database:  $id"
-  echo "  (Obsidian mobile needs HTTPS — see sync/couchdb/README.md.)"
+  print_device_uri "$id" "$(device_url)"
+}
+
+cmd_setup_uri() {
+  require_installed
+  local id="${1:-}" change="" src name
+  [ "${2:-}" = "--url" ] && change=1
+  [ -n "$id" ] || { vault_rows; echo; ask "  Vault id: " id; }
+  src="$(reg list | awk -F'\t' -v id="$id" '$1==id {print $2}')"
+  case "$src" in
+    livesync) ;;
+    livesync-existing) die "'$id' joins an existing LiveSync server; its Setup URI comes from that setup's plugin (Copy setup URI)" ;;
+    "") die "no vault '$id'" ;;
+    *) die "'$id' isn't a self-hosted LiveSync vault ($(source_label "$src")); only those have Setup URIs" ;;
+  esac
+  # shellcheck disable=SC1090
+  [ -n "$(source "state/$id/sync.env"; echo "${LIVESYNC_ID_RECOVERY_CODE:-}")" ] \
+    || die "'$id' was set up before Setup URIs existed; remove it and add it again"
+  print_device_uri "$id" "$(device_url "$change")"
 }
 
 setup_livesync_existing() {
@@ -413,7 +518,9 @@ add_vault() {
 
   1) Self-hosted LiveSync
      + Free, real-time, conflicts handled for you; everything on your server
-     - Install and configure the Self-hosted LiveSync plugin on each device
+     + End-to-end encrypted; devices set up from a generated Setup URI
+     - Needs the Self-hosted LiveSync plugin on each device
+     - Phones need an HTTPS address for this server (see README)
      - Runs a CouchDB database here (shared by every LiveSync vault)
 
   2) Existing LiveSync server
@@ -491,7 +598,7 @@ ensure_all_up() {
     fi
     set_env "state/$id/sync.env" STACK_ID "$STACK_ID"
     case "$src" in
-      livesync) ensure_couchdb; vc "$id" "$src" up -d >/dev/null 2>&1 ;;
+      livesync) ensure_couchdb; worker_configured "$id" || import_server_uri "$id"; vc "$id" "$src" up -d >/dev/null 2>&1 ;;
       livesync-existing) ensure_livesync_network; vc "$id" "$src" up -d >/dev/null 2>&1 ;;
       *) vc "$id" "$src" up -d --build >/dev/null 2>&1 ;;
     esac
@@ -740,6 +847,7 @@ cmd_uninstall() {
     docker rm -f "$c" >/dev/null && ok "removed leftover container $c"
   done
   docker network rm "${P}obsidian-livesync" >/dev/null 2>&1 && ok "removed network ${P}obsidian-livesync"
+  docker volume rm "${P}obsidian-deno-cache" >/dev/null 2>&1 || true
   docker rmi "${P}obsidian-official-sync:local" "${P}obsidian-git-sync:local" >/dev/null 2>&1 || true
 
   for link in /usr/local/bin/*; do
@@ -780,7 +888,8 @@ cmd_menu() {
     say "Vaults  ($ROOT)"
     vault_rows
     echo
-    echo "  a) add   r) remove   s) status   l) logs   R) restart   e) endpoint   u) update   q) quit"
+    echo "  a) add   r) remove   s) status   l) logs   R) restart   e) endpoint"
+    echo "  U) setup URI   u) update   q) quit"
     ask "  > " choice
     case "${choice:-q}" in
       a) add_vault ;;
@@ -789,6 +898,7 @@ cmd_menu() {
       l) ask "  Logs for (vault id, api, mcp, couchdb): " target; [ -n "$target" ] && { cmd_logs "$target" || true; } ;;
       R) ask "  Restart (vault id, api, mcp, couchdb, all): " target; [ -n "$target" ] && { cmd_restart "$target" || true; } ;;
       e) cmd_endpoint ;;
+      U) ask "  Setup URI for (vault id): " target; [ -n "$target" ] && { ( cmd_setup_uri "$target" ) || true; } ;;
       u) cmd_update; return ;;
       *) break ;;
     esac
@@ -814,6 +924,7 @@ case "$cmd" in
   update) cmd_update ;;
   uninstall) cmd_uninstall "$@" ;;
   endpoint) cmd_endpoint "$@" ;;
+  setup-uri) cmd_setup_uri "$@" ;;
   link) cmd_link "$@" ;;
   help|-h|--help) usage ;;
   *) usage; exit 1 ;;
