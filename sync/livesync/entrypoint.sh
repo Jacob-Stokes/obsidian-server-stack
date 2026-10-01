@@ -4,12 +4,12 @@
 # VM, no Electron. Runs as uid 1000 (set via `user:` in compose); permissions
 # on /vault and /data are fixed up beforehand by the vault-sync-init one-shot.
 #
-# Used by two sync options:
-#   sync/self-hosted-livesync — settings written from COUCHDB_* env vars,
-#                               pointing at the CouchDB container next to it.
-#   sync/livesync-existing    — settings imported once from a Setup URI
-#                               (`setup` mode below), for a LiveSync server
-#                               you already use.
+# One worker per vault, configured one of two ways:
+#   self-hosted     — settings written from COUCHDB_* env vars (from the
+#                     vault's sync.env), pointing at the shared CouchDB in
+#                     sync/couchdb and a database named after the vault.
+#   existing server — settings imported once from a Setup URI (`setup` mode
+#                     below), for a LiveSync server you already use.
 set -e
 
 VAULT_PATH=/vault

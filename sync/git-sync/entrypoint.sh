@@ -4,7 +4,7 @@
 # obsidian-git plugin.
 set -eu
 
-: "${GIT_REPO_URL:?GIT_REPO_URL is not set — see .env.example}"
+: "${GIT_REPO_URL:?GIT_REPO_URL is not set — add it to the vault's state/<id>/sync.env (see README.md)}"
 BRANCH="${GIT_BRANCH:-main}"
 INTERVAL="${SYNC_INTERVAL:-60}"
 VAULT=/vault

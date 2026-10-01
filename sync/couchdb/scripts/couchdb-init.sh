@@ -9,7 +9,9 @@ password="${COUCHDB_PASSWORD:?COUCHDB_PASSWORD is required}"
 node="${COUCHDB_NODE:-_local}"
 
 echo "==> Waiting for CouchDB at ${hostname} ..."
-until curl -sf "${hostname}/_up" 2>/dev/null | grep -q '"status":"ok"'; do
+# Authenticated: after the first run require_valid_user is on, and an
+# anonymous /_up returns 401 forever (found by re-running install.sh).
+until curl -sf --user "${username}:${password}" "${hostname}/_up" 2>/dev/null | grep -q '"status":"ok"'; do
     printf '.'
     sleep 2
 done
@@ -50,19 +52,8 @@ curl -sf -X PUT "${hostname}/_node/${node}/_config/cors/origins" \
     -d '"app://obsidian.md,capacitor://localhost,http://localhost"' \
     --user "${username}:${password}" && echo "[OK] cors/origins"
 
-db="${COUCHDB_DATABASE:-obsidiannotes}"
-set +e
-status=$(curl -sf -o /dev/null -w "%{http_code}" --user "${username}:${password}" "${hostname}/${db}" 2>/dev/null)
-set -e
-
-if [ "$status" = "200" ]; then
-    echo "[OK] database '${db}' already exists"
-else
-    curl -sf -X PUT "${hostname}/${db}" --user "${username}:${password}" && echo "[OK] database '${db}' created" || echo "[WARN] database creation returned non-200 — may already exist"
-fi
-
 echo ""
 echo "==> CouchDB initialization complete!"
 echo "    URL      : ${hostname}"
-echo "    Database : ${db}"
 echo "    Username : ${username}"
+echo "    (one database per vault, created by install.sh)"

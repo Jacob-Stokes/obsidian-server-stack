@@ -1,0 +1,52 @@
+# One vault's LiveSync worker. Mirrors a LiveSync (CouchDB) database into the
+# vault's folder as real files, both ways, using the LiveSync project's own
+# headless CLI. Two ways to point it at a database, both set up by install.sh:
+#   - self-hosted: this stack's shared CouchDB (sync/couchdb), a database
+#     named after the vault id, settings written from COUCHDB_* in sync.env;
+#   - existing server: imported once from a LiveSync Setup URI, keeping that
+#     setup's encryption and other settings.
+#
+# Per-vault: started as its own compose project, with paths from the vault's
+# state/<id>/sync.env:
+#   docker compose -p <prefix>obsidian-<id> --env-file state/<id>/sync.env \
+#     --project-directory sync/livesync -f sync/livesync/docker-compose.yml up -d
+
+services:
+  # One-shot: fixes ownership of the vault dir and the CLI's local database
+  # before the worker (uid 1000) touches them.
+  init:
+    image: ghcr.io/vrtmrz/livesync-cli:1.0.21-cli
+    container_name: ${INSTANCE_PREFIX:-}obsidian-${VAULT_ID:?}-livesync-init
+    restart: on-failure
+    entrypoint: ["sh", "-c", "mkdir -p /vault /data && chown -R 1000:1000 /vault /data"]
+    volumes:
+      - ${VAULT_DIR:?}:/vault
+      - livesync-db:/data
+    network_mode: none
+
+  livesync:
+    image: ghcr.io/vrtmrz/livesync-cli:1.0.21-cli
+    container_name: ${INSTANCE_PREFIX:-}obsidian-${VAULT_ID:?}-livesync
+    restart: unless-stopped
+    user: "1000:1000"
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    env_file:
+      - ${STATE_DIR:?}/sync.env
+    entrypoint: ["/scripts/entrypoint.sh"]
+    volumes:
+      - ${VAULT_DIR:?}:/vault
+      - livesync-db:/data
+      - ./entrypoint.sh:/scripts/entrypoint.sh:ro
+    networks:
+      - livesync
+
+volumes:
+  livesync-db:
+
+# Created by install.sh; also joined by the shared CouchDB.
+networks:
+  livesync:
+    name: ${INSTANCE_PREFIX:-}obsidian-livesync
+    external: true

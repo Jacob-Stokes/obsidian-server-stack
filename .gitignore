@@ -2,9 +2,12 @@
 sync/*/.env
 node_modules/
 dist/
-vault/
 *.log
 .DS_Store
-# sync credentials/state — never commit
+# vault contents, the vault registry, and each vault's sync credentials/state
+vaults/
+state/
+# pre-0.2 single-vault layout
+vault/
 sync/*/ssh/
 sync/*/data/

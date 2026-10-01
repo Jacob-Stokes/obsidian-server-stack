@@ -1,16 +1,21 @@
-# Git sync — keeps the shared vault in sync with a git remote on a timer.
-# Devices sync against the same repo with the obsidian-git plugin.
-
-name: ${INSTANCE_PREFIX:-}obsidian-git-sync
+# One vault's git sync — keeps the vault folder in sync with a git remote on
+# a timer. Devices sync against the same repo with the obsidian-git plugin.
+#
+# Per-vault: started as its own compose project by install.sh, with paths and
+# settings from the vault's state/<id>/sync.env. The deploy key lives in
+# state/<id>/ssh.
 
 services:
   git-sync:
     build: .
-    container_name: ${INSTANCE_PREFIX:-}obsidian-git-sync
+    image: ${INSTANCE_PREFIX:-}obsidian-git-sync:local
+    container_name: ${INSTANCE_PREFIX:-}obsidian-${VAULT_ID:?}-git-sync
     restart: unless-stopped
     env_file:
-      - .env
+      - ${STATE_DIR:?}/sync.env
     volumes:
-      # Same folder obsidian-api reads (the repo root's ./vault).
-      - ${VAULT_HOST_PATH:-../../vault}:/vault
-      - ./ssh:/ssh
+      - ${VAULT_DIR:?}:/vault
+      - ${STATE_DIR:?}/ssh:/ssh
+    # Only needs outbound internet: use Docker's default bridge rather than a
+    # network per vault, which would run out of address space with many vaults.
+    network_mode: bridge

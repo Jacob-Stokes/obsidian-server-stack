@@ -30,7 +30,7 @@ if [ "$1" = "list-vaults" ]; then
 fi
 
 [ -n "${OBSIDIAN_AUTH_TOKEN:-}" ] || { echo "OBSIDIAN_AUTH_TOKEN is not set. Run: docker compose run --rm obsidian-sync get-token" >&2; exit 1; }
-[ -n "${VAULT_NAME:-}" ] || { echo "VAULT_NAME is not set — see .env.example." >&2; exit 1; }
+[ -n "${VAULT_NAME:-}" ] || { echo "VAULT_NAME is not set — add it to the vault's state/<id>/sync.env (see README.md)." >&2; exit 1; }
 
 setup_sync() {
   echo "Setting up sync for vault '${VAULT_NAME}'..."

@@ -26,8 +26,18 @@ export function zodToJsonSchema(schema: z.ZodType): any {
     const discriminator: string = def.discriminator;
     const discriminatorValues: string[] = [];
     const allProperties: Record<string, any> = {};
+    // A field every action requires (e.g. vault_id) stays required after
+    // flattening, so clients see it as mandatory rather than optional.
+    let commonRequired: Set<string> | null = null;
     for (const opt of def.options as z.ZodObject<any>[]) {
       const shape = ((opt as any)._def.shape)();
+      const required = new Set<string>(
+        Object.entries(shape)
+          .filter(([, v]) => !(v as any).isOptional?.() && !isDefaulted(v as z.ZodType))
+          .map(([k]) => k),
+      );
+      const previous: Set<string> | null = commonRequired;
+      commonRequired = previous === null ? required : new Set<string>([...previous].filter((k: string) => required.has(k)));
       for (const [k, v] of Object.entries(shape)) {
         if (k === discriminator) {
           const litDef = (v as any)._def;
@@ -48,7 +58,7 @@ export function zodToJsonSchema(schema: z.ZodType): any {
     return {
       type: "object",
       properties: allProperties,
-      required: [discriminator],
+      required: [discriminator, ...[...((commonRequired as Set<string> | null) ?? [])].filter((k: string) => k !== discriminator)],
       additionalProperties: false,
     };
   }

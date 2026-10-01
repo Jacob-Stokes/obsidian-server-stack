@@ -16,7 +16,7 @@ export async function handleStatus(ctx: ToolContext) {
   ]);
   return {
     service: "obsidian-mcp",
-    version: "1.0.0",
+    version: "2.0.0",
     health,
     vault: stats,
     configuration: {

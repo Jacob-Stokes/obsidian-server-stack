@@ -5,6 +5,7 @@ COPY package.json ./
 RUN npm install --omit=dev --no-audit --no-fund
 COPY src/server.mjs ./server.mjs
 COPY src/frontmatter.mjs ./frontmatter.mjs
+COPY src/registry.mjs ./registry.mjs
 EXPOSE 3000
 USER node
 CMD ["node", "server.mjs"]

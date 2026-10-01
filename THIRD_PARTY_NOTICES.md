@@ -1,26 +1,25 @@
 # Third-party notices
 
-## sync/self-hosted-livesync/
+## sync/couchdb/
 
 `couchdb`, `couchdb-init`, and the `caddy`/`tailscale`/`cloudflare` profiles
 are vendored from
 [vrtmrz/obsidian-livesync](https://github.com/vrtmrz/obsidian-livesync)
 (`docker/` folder), MIT licensed. File paths were adjusted to fit this
-repo's layout; the CouchDB config and init logic are unchanged.
+repo's layout, the per-vault database is created by `install.sh` rather than
+`couchdb-init`, and `couchdb-init`'s readiness check authenticates so it can
+be re-run once authentication is on. The CouchDB configuration is otherwise
+unchanged.
 
-`vault-sync` / `vault-sync-init` are original to this repo (an entrypoint
-script only, no Dockerfile). The image they run,
+## sync/livesync/
+
+Original compose file and entrypoint script (no Dockerfile). The image they
+run,
 [`ghcr.io/vrtmrz/livesync-cli`](https://github.com/vrtmrz/obsidian-livesync/pkgs/container/livesync-cli),
-is that same project's own official headless CLI
+is the same project's own official headless CLI
 ([`src/apps/cli`](https://github.com/vrtmrz/obsidian-livesync/tree/main/src/apps/cli)
 in the same repo, same MIT license), referenced directly rather than
 rebuilt, since its authors already publish it.
-
-## sync/livesync-existing/
-
-Original compose file. It runs the same `ghcr.io/vrtmrz/livesync-cli` image
-(MIT, above) with the shared entrypoint from `sync/self-hosted-livesync/`,
-and vendors nothing further.
 
 ## sync/official-obsidian-sync/
 

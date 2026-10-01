@@ -1,19 +1,25 @@
-# Official Obsidian Sync — our own thin image, not someone else's.
-# Installs `obsidian-headless` straight from npm at build time, the same
-# distribution channel Obsidian themselves publish it through.
+# One vault's Official Obsidian Sync client — our own thin image, not someone
+# else's. Installs `obsidian-headless` straight from npm at build time, the
+# same distribution channel Obsidian themselves publish it through.
 # See ../../THIRD_PARTY_NOTICES.md.
 #
 # Requires an active Obsidian Sync subscription: https://obsidian.md/sync
-
-name: ${INSTANCE_PREFIX:-}obsidian-official-sync
+#
+# Per-vault: started as its own compose project by install.sh, with paths and
+# settings from the vault's state/<id>/sync.env. The login and sync state live
+# in state/<id>/official.
 
 services:
   obsidian-sync:
     build: .
-    container_name: ${INSTANCE_PREFIX:-}obsidian-official-sync
+    image: ${INSTANCE_PREFIX:-}obsidian-official-sync:local
+    container_name: ${INSTANCE_PREFIX:-}obsidian-${VAULT_ID:?}-official-sync
     restart: unless-stopped
     env_file:
-      - .env
+      - ${STATE_DIR:?}/sync.env
     volumes:
-      - ${VAULT_HOST_PATH:-../../vault}:/vault
-      - ./data:/data
+      - ${VAULT_DIR:?}:/vault
+      - ${STATE_DIR:?}/official:/data
+    # Only needs outbound internet: use Docker's default bridge rather than a
+    # network per vault, which would run out of address space with many vaults.
+    network_mode: bridge
