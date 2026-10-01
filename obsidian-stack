@@ -1,0 +1,760 @@
+#!/usr/bin/env bash
+# obsidian-stack — set up and manage an obsidian-server-stack install: its
+# vaults, their sync, status and logs.
+#
+# It only ever acts on the install it belongs to: the folder it lives in
+# (following symlinks, so a copy linked onto PATH still knows its home), or
+# one given with --dir / $OBSIDIAN_STACK_DIR. Containers are found by the
+# Docker label obsidian-server-stack.id=<STACK_ID from .env>, never by name,
+# so other Obsidian containers on the same machine are never touched.
+set -euo pipefail
+
+say()  { printf '\n\033[1m%s\033[0m\n' "$1"; }
+ok()   { printf '  \033[32m✓\033[0m %s\n' "$1"; }
+warn() { printf '  \033[33m!\033[0m %s\n' "$1"; }
+die()  { printf '\033[31mError:\033[0m %s\n' "$1" >&2; exit 1; }
+# read that treats end of input as an empty answer instead of exiting (set -e)
+ask() { read -rp "$1" "$2" || printf -v "$2" '%s' ""; }
+ask_secret() { read -rsp "$1" "$2" || printf -v "$2" '%s' ""; echo; }
+
+usage() {
+  cat <<'EOF'
+Usage: obsidian-stack [--dir PATH] [command]
+
+  (no command)        interactive menu
+  install             first-time setup, or re-run to repair/rebuild
+  status              core containers and each vault's sync
+  vaults              list vaults
+  add                 add a vault
+  remove [ID]         remove a vault (its files are kept)
+  logs TARGET [-f]    logs for a vault id, or api | mcp | couchdb
+  restart TARGET      restart a vault's sync, api | mcp | couchdb, or all
+  update              git pull, rebuild and restart everything
+  endpoint [--show-token]
+                      MCP URL and bearer token
+  link [NAME]         put this install's obsidian-stack on PATH
+                      (/usr/local/bin/NAME, default obsidian-stack)
+
+The install it acts on: --dir, else $OBSIDIAN_STACK_DIR, else the folder
+this script lives in.
+EOF
+}
+
+# --- which install -----------------------------------------------------------
+
+DIR=""
+if [ "${1:-}" = "--dir" ]; then DIR="${2:?--dir needs a path}"; shift 2; fi
+DIR="${DIR:-${OBSIDIAN_STACK_DIR:-}}"
+[ -n "$DIR" ] || DIR="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
+[ -f "$DIR/docker-compose.yml" ] && [ -d "$DIR/services/obsidian-api" ] \
+  || die "$DIR is not an obsidian-server-stack folder (use --dir)"
+cd "$DIR"
+ROOT="$(pwd)"
+P=""
+STACK_ID=""
+LABEL=obsidian-server-stack
+ME="$0"
+[ "$(command -v "$(basename "$0")" 2>/dev/null)" = "$0" ] && ME="$(basename "$0")"
+COUCHDB_READY=""
+
+load_env() {
+  # shellcheck disable=SC1091
+  [ -f .env ] && source .env
+  P="${INSTANCE_PREFIX:-}"
+  STACK_ID="${STACK_ID:-}"
+}
+
+require_installed() {
+  load_env
+  [ -n "$STACK_ID" ] && docker image inspect "${P}obsidian-api:local" >/dev/null 2>&1 \
+    || die "this install isn't set up yet — run: $ME install"
+}
+
+# own [-R] PATH — chown to the containers' uid/gid
+own() {
+  if ! chown "${@:1:$#-1}" 1000:1000 "${@: -1}" 2>/dev/null; then
+    echo "  Warning: couldn't chown ${*: -1} to 1000:1000 (not root?). If writes fail"
+    echo "  later, run that chown yourself."
+  fi
+}
+
+# The vault registry is managed by the same code the API reads it with, run
+# inside the API image, so the host needs nothing beyond Docker.
+reg() { docker run --rm -v "$ROOT/vaults:/vaults" -w /app --entrypoint node "${P}obsidian-api:local" registry.mjs /vaults "$@" </dev/null; }
+
+# This install's containers, by label: ours <role> [vault]
+ours() {
+  local args=(--filter "label=$LABEL.id=$STACK_ID" --filter "label=$LABEL.role=$1")
+  [ -n "${2:-}" ] && args+=(--filter "label=$LABEL.vault=$2")
+  docker ps -a "${args[@]}" --format '{{.Names}}'
+}
+
+# "● running (Up 2 hours)" style one-liner for a container
+dot() {
+  local c="$1" state status health
+  [ -n "$c" ] || { printf '\033[90m○ not running\033[0m'; return; }
+  state="$(docker inspect -f '{{.State.Status}}' "$c" 2>/dev/null || echo missing)"
+  status="$(docker ps -a --filter "name=^${c}$" --format '{{.Status}}')"
+  health="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{end}}' "$c" 2>/dev/null || true)"
+  case "$state:$health" in
+    running:unhealthy) printf '\033[31m● unhealthy\033[0m (%s)' "$status" ;;
+    running:*) printf '\033[32m● running\033[0m (%s)' "$status" ;;
+    restarting:*) printf '\033[31m● restarting\033[0m (%s)' "$status" ;;
+    *) printf '\033[31m● %s\033[0m (%s)' "$state" "$status" ;;
+  esac
+}
+
+# --- vault setup (one function per sync source) ------------------------------
+
+set_env() {
+  # set_env FILE KEY VALUE [force] — replaces KEY= in FILE, only if currently
+  # empty unless "force" is passed. Always quotes the written value: these
+  # files get `source`d, so an unquoted value with a space breaks them — e.g.
+  # a vault name like "My Vault" parses as VAULT_NAME=My, then tries to run
+  # "Vault" as a command. Found by actually entering one, not by inspection.
+  local file="$1" key="$2" val="$3" force="${4:-}"
+  touch "$file"
+  if grep -q "^${key}=" "$file"; then
+    if [ -n "$force" ] || [ -z "$(grep "^${key}=" "$file" | cut -d= -f2-)" ]; then
+      local tmp; tmp="$(mktemp)"
+      # via ENVIRON, not awk -v, which would mangle backslashes in the value
+      K="$key" V="\"$val\"" awk 'index($0, ENVIRON["K"]"=")==1 { print ENVIRON["K"]"="ENVIRON["V"]; next } { print }' "$file" > "$tmp"
+      cat "$tmp" > "$file" && rm -f "$tmp"
+    fi
+  else
+    echo "${key}=\"${val}\"" >> "$file"
+  fi
+}
+
+sync_dir() {
+  case "$1" in
+    livesync|livesync-existing) echo livesync ;;
+    official) echo official-obsidian-sync ;;
+    git) echo git-sync ;;
+    *) echo "" ;;
+  esac
+}
+
+source_label() {
+  case "$1" in
+    livesync) echo "self-hosted LiveSync" ;;
+    livesync-existing) echo "existing LiveSync server" ;;
+    official) echo "Official Obsidian Sync" ;;
+    git) echo "git" ;;
+    *) echo "no sync" ;;
+  esac
+}
+
+vc() {
+  local id="$1" dir; dir="$(sync_dir "$2")"; shift 2
+  docker compose -p "${P}obsidian-${id}" --project-directory "sync/$dir" \
+    -f "sync/$dir/docker-compose.yml" --env-file "state/$id/sync.env" "$@"
+}
+
+new_state() {
+  local id="$1"
+  mkdir -p "state/$id"
+  chmod 700 "state/$id"
+  local f="state/$id/sync.env"
+  : > "$f"
+  chmod 600 "$f"
+  set_env "$f" INSTANCE_PREFIX "$P"
+  set_env "$f" STACK_ID "$STACK_ID"
+  set_env "$f" VAULT_ID "$id"
+  set_env "$f" VAULT_DIR "$ROOT/vaults/$id"
+  set_env "$f" STATE_DIR "$ROOT/state/$id"
+}
+
+ensure_livesync_network() {
+  docker network inspect "${P}obsidian-livesync" >/dev/null 2>&1 \
+    || docker network create "${P}obsidian-livesync" >/dev/null
+}
+
+ensure_couchdb() {
+  [ -n "$COUCHDB_READY" ] && return 0
+  ( cd sync/couchdb
+    [ -f .env ] || cp .env.example .env
+    chmod 600 .env
+    set_env .env INSTANCE_PREFIX "$P" force
+    set_env .env STACK_ID "$STACK_ID" force
+    # shellcheck disable=SC1091
+    source .env
+    if [ -z "${COUCHDB_PASSWORD:-}" ]; then
+      set_env .env COUCHDB_PASSWORD "$(openssl rand -hex 20)"
+      ok "generated the CouchDB password (sync/couchdb/.env)"
+    fi
+  )
+  ensure_livesync_network
+  ( cd sync/couchdb && docker compose up -d )
+  printf '  waiting for CouchDB'
+  for _ in $(seq 1 60); do
+    [ "$(docker inspect -f '{{.State.Health.Status}}' "${P}obsidian-couchdb" 2>/dev/null)" = healthy ] && break
+    printf '.'; sleep 2
+  done
+  # couchdb-init turns on auth and CORS; wait for it so a device can't
+  # connect to a half-configured server.
+  for _ in $(seq 1 30); do
+    [ "$(docker inspect -f '{{.State.Status}} {{.State.ExitCode}}' "${P}obsidian-couchdb-init" 2>/dev/null)" = "exited 0" ] && break
+    printf '.'; sleep 2
+  done
+  echo
+  [ "$(docker inspect -f '{{.State.Health.Status}}' "${P}obsidian-couchdb" 2>/dev/null)" = healthy ] \
+    || die "CouchDB didn't come up — check: cd sync/couchdb && docker compose logs"
+  ok "CouchDB is up on port $(grep '^COUCHDB_PORT=' sync/couchdb/.env | cut -d= -f2- | tr -d '"')"
+  COUCHDB_READY=1
+}
+
+couchdb_env() { grep "^$1=" sync/couchdb/.env | cut -d= -f2- | tr -d '"'; }
+
+create_db() {
+  local code
+  code="$(docker exec "${P}obsidian-couchdb" curl -s -o /dev/null -w '%{http_code}' \
+    -u "$(couchdb_env COUCHDB_USER):$(couchdb_env COUCHDB_PASSWORD)" -X PUT "http://127.0.0.1:5984/$1")"
+  case "$code" in
+    201|202) ok "created CouchDB database '$1'" ;;
+    412) ok "CouchDB database '$1' already exists, reusing it" ;;
+    *) die "couldn't create CouchDB database '$1' (HTTP $code)" ;;
+  esac
+}
+
+setup_none() {
+  ok "no sync — put files in vaults/$1/ however you like (rsync, Syncthing, ...)"
+}
+
+setup_livesync() {
+  local id="$1" f="state/$1/sync.env" pass
+  ensure_couchdb
+  create_db "$id"
+  set_env "$f" COUCHDB_URI "http://${P}obsidian-couchdb:5984"
+  set_env "$f" COUCHDB_USER "$(couchdb_env COUCHDB_USER)"
+  set_env "$f" COUCHDB_PASSWORD "$(couchdb_env COUCHDB_PASSWORD)"
+  set_env "$f" COUCHDB_DATABASE "$id"
+  echo "  If you'll turn on end-to-end encryption in the LiveSync plugin for this"
+  echo "  vault, enter the passphrase you'll use there (blank for none)."
+  ask_secret "  Encryption passphrase: " pass
+  [ -n "$pass" ] && set_env "$f" VAULT_ENCRYPT_PASSPHRASE "$pass"
+  vc "$id" livesync up -d
+  ok "LiveSync worker is up"
+  echo "  On each device, point the Self-hosted LiveSync plugin at:"
+  echo "    URI:       http://<this server>:$(couchdb_env COUCHDB_PORT)"
+  echo "    Username:  $(couchdb_env COUCHDB_USER)"
+  echo "    Password:  COUCHDB_PASSWORD in sync/couchdb/.env"
+  echo "    Database:  $id"
+  echo "  (Obsidian mobile needs HTTPS — see sync/couchdb/README.md.)"
+}
+
+setup_livesync_existing() {
+  local id="$1" uri pass
+  ensure_livesync_network
+  # </dev/null: `docker compose run` otherwise reads stdin and swallows
+  # whatever the user types next (found by testing with piped input).
+  if vc "$id" livesync-existing run --rm -T --entrypoint sh livesync -c 'test -f /data/.livesync/settings.json' </dev/null >/dev/null 2>&1; then
+    ok "already connected, reusing existing settings"
+  else
+    echo "  In Obsidian on a device that already syncs: Settings → Self-hosted LiveSync"
+    echo "  → Setup → Copy the setup URI. It asks you to choose a passphrase for it."
+    echo
+    ask "  Setup URI: " uri
+    [ -n "$uri" ] || die "a Setup URI is required"
+    ask_secret "  Its passphrase (hidden): " pass
+    [ -n "$pass" ] || die "the Setup URI passphrase is required"
+    # Used once and not stored: the URI goes in as an env var for this run
+    # only, the passphrase on stdin. The CLI keeps the decoded settings in
+    # the vault's own data volume.
+    if ! printf '%s\n' "$pass" | vc "$id" livesync-existing run --rm -T -e SETUP_URI="$uri" livesync setup >/dev/null 2>&1; then
+      die "couldn't apply that Setup URI — check the URI and passphrase, then re-run ./install.sh"
+    fi
+    ok "settings imported from the Setup URI"
+  fi
+  vc "$id" livesync-existing up -d
+  ok "connected to your existing LiveSync server"
+}
+
+setup_official() {
+  local id="$1" f="state/$1/sync.env" other token="" vn vp out again pick
+  local data="state/$id/official" tokfile="state/$id/official/config/obsidian-headless/auth_token"
+  mkdir -p "$data"
+  own -R "$data"
+  set_env "$f" DEVICE_NAME "obsidian-server-stack"
+  vc "$id" official build -q
+
+  # Reuse a login from another Official Sync vault on this server, if any.
+  for other in state/*/official/config/obsidian-headless/auth_token; do
+    [ -s "$other" ] && [ "$other" != "$tokfile" ] || continue
+    ask "  Use the Obsidian account already signed in on this server? [Y/n] " again
+    case "$again" in [nN]*) ;; *)
+      mkdir -p "$(dirname "$tokfile")"
+      cp "$other" "$tokfile"
+      own -R "$data"
+      token="$(cat "$tokfile")"
+      ok "reusing that login"
+    ;; esac
+    break
+  done
+
+  if [ -z "$token" ]; then
+    # The one step that can't be scripted: your Obsidian email, password and
+    # MFA code have to be typed by you — a script that could do this for you
+    # would need your raw account password sitting in a file.
+    say "Logging in to Obsidian (interactive)"
+    until vc "$id" official run --rm -it obsidian-sync get-token; do
+      echo
+      echo "  Login didn't work (the error above says why)."
+      ask "  Try again? [Y/n] " again
+      case "$again" in [nN]*) die "Obsidian login cancelled" ;; esac
+    done
+    if [ -s "$tokfile" ]; then
+      token="$(cat "$tokfile")"
+    else
+      ask "  Paste the OBSIDIAN_AUTH_TOKEN value printed above: " token
+    fi
+    [ -n "$token" ] || die "no token entered"
+  fi
+  set_env "$f" OBSIDIAN_AUTH_TOKEN "$token" force
+
+  # Offer the vaults on the account; fall back to typing the name.
+  local remote=()
+  while IFS= read -r vn; do [ -n "$vn" ] && remote+=("$vn"); done < <(
+    vc "$id" official run --rm -T obsidian-sync list-vaults </dev/null 2>/dev/null || true)
+  vn=""
+  if [ "${#remote[@]}" -eq 1 ]; then
+    vn="${remote[0]}"
+    ok "found one vault on your account: $vn"
+  elif [ "${#remote[@]}" -gt 1 ]; then
+    echo "  Vaults on your account:"
+    for i in "${!remote[@]}"; do echo "    $((i + 1))) ${remote[$i]}"; done
+    while [ -z "$vn" ]; do
+      ask "  Which one? [1-${#remote[@]}] " pick
+      if [[ "$pick" =~ ^[0-9]+$ ]] && [ "$pick" -ge 1 ] && [ "$pick" -le "${#remote[@]}" ]; then
+        vn="${remote[$((pick - 1))]}"
+      fi
+    done
+  else
+    echo "  Couldn't list the vaults on your account, so type the name instead."
+    ask "  Exact vault name on your Obsidian Sync account: " vn
+  fi
+  [ -n "$vn" ] || die "vault name is required"
+  set_env "$f" VAULT_NAME "$vn" force
+
+  # Link the vault here, not in the long-running container, so a wrong
+  # encryption password gets asked again instead of a restart loop.
+  if vc "$id" official run --rm -T obsidian-sync is-configured </dev/null >/dev/null 2>&1; then
+    ok "sync for '$vn' is already set up, reusing it"
+  else
+    ask_secret "  End-to-end encryption password (blank if you didn't turn that on): " vp
+    # Passed by name (-e VAULT_PASSWORD), so it never shows up in `ps`.
+    until out=$(VAULT_PASSWORD="$vp" vc "$id" official run --rm -T -e VAULT_PASSWORD obsidian-sync setup </dev/null 2>&1); do
+      case "$out" in
+        *"Wrong vault key"*)       echo "  That encryption password isn't right for '$vn'." ;;
+        *"Password not provided"*) echo "  '$vn' has end-to-end encryption, so it needs its password." ;;
+        *)
+          echo "$out" | grep -v '^ *at \|Container ' | tail -5
+          echo "  Setting up sync didn't work (see above)."
+          ask "  Try again? [Y/n] " again
+          case "$again" in [nN]*) die "Obsidian Sync setup cancelled" ;; esac
+          continue ;;
+      esac
+      echo "  (It's the vault's encryption password, not your Obsidian account password.)"
+      ask_secret "  Encryption password (blank to stop): " vp
+      [ -n "$vp" ] || die "Obsidian Sync setup cancelled"
+    done
+    set_env "$f" VAULT_PASSWORD "$vp" force
+    ok "connected to '$vn'"
+  fi
+  vc "$id" official up -d
+  ok "Official Obsidian Sync is up"
+}
+
+setup_git() {
+  local id="$1" f="state/$1/sync.env" repo
+  echo "  The vault's repo. SSH (e.g. git@github.com:you/vault.git) is recommended —"
+  echo "  a deploy key is generated for you. HTTPS works too, with a token in the URL."
+  ask "  Repo URL: " repo
+  [ -n "$repo" ] || die "a repo URL is required"
+  set_env "$f" GIT_REPO_URL "$repo"
+  set_env "$f" GIT_BRANCH main
+  set_env "$f" SYNC_INTERVAL 60
+  local ssh="state/$id/ssh"
+  mkdir -p "$ssh"
+  case "$repo" in
+    http://*|https://*|file://*) ;;
+    *)
+      if [ ! -f "$ssh/id_ed25519" ]; then
+        command -v ssh-keygen >/dev/null 2>&1 || die "ssh-keygen is required to create a deploy key"
+        ssh-keygen -q -t ed25519 -N "" -f "$ssh/id_ed25519" -C "obsidian-server-stack/$id"
+        echo
+        echo "  Add this public key to the repo as a deploy key WITH WRITE ACCESS"
+        echo "  (GitHub: repo → Settings → Deploy keys → Add deploy key → tick 'Allow write access'):"
+        echo
+        echo "    $(cat "$ssh/id_ed25519.pub")"
+        echo
+        ask "  Press Enter once it's added... " _
+      fi
+      ;;
+  esac
+  own -R "$ssh"
+  chmod 600 "$ssh/id_ed25519" 2>/dev/null || true
+  vc "$id" git up -d --build
+  ok "git sync is up — every 60s; devices use the obsidian-git plugin on the same repo"
+}
+
+
+add_vault() {
+  local name id choice src
+  say "Add a vault"
+  ask "  Vault name (e.g. Personal, Work): " name
+  [ -n "$name" ] || { echo "  No name entered, nothing added."; return; }
+  id="$(reg suggest-id "$name")"
+  cat <<'EOF'
+
+  How should this vault's notes get onto this server?
+
+  1) Self-hosted LiveSync
+     + Free, real-time, conflicts handled for you; everything on your server
+     - Install and configure the Self-hosted LiveSync plugin on each device
+     - Runs a CouchDB database here (shared by every LiveSync vault)
+
+  2) Existing LiveSync server
+     + Joins a LiveSync setup you already use, as one more device
+     + Keeps its encryption and other settings exactly as they are
+     - Needs a Setup URI from the plugin (Copy setup URI) and its passphrase
+     - Writes go straight into that real vault — consider a test vault first
+
+  3) Official Obsidian Sync
+     + Easiest on your devices: just Obsidian's built-in Sync
+     + Real-time, conflicts handled for you
+     - Needs a paid Obsidian Sync subscription
+     - One interactive login during setup (reused for further vaults)
+
+  4) Git
+     + Free, full version history, works with any git host
+     - Syncs on a timer: changes take minutes, not seconds
+     - Editing the same note on two devices between syncs gives a conflict
+       (both versions are kept, but you tidy it up by hand)
+     - Needs the obsidian-git plugin on each device
+
+  5) None
+     + Nothing extra to run
+     - You keep vaults/<id>/ up to date yourself (rsync, Syncthing, etc.)
+
+EOF
+  ask "  Choice [1]: " choice
+  case "${choice:-1}" in
+    1) src=livesync ;;
+    2) src=livesync-existing ;;
+    3) src=official ;;
+    4) src=git ;;
+    5) src=none ;;
+    *) echo "  Not a choice, nothing added."; return ;;
+  esac
+
+  mkdir -p "vaults/$id"
+  own "vaults/$id"
+  new_state "$id"
+  case "$src" in
+    livesync) setup_livesync "$id" ;;
+    livesync-existing) setup_livesync_existing "$id" ;;
+    official) setup_official "$id" ;;
+    git) setup_git "$id" ;;
+    none) setup_none "$id" ;;
+  esac
+  # Registered last, so a vault only appears to MCP clients once its sync
+  # is set up.
+  reg add "$id" "$src" "$name"
+  ok "added vault '$name' (id: $id) — files in vaults/$id/"
+}
+
+remove_vault() {
+  local id="${1:-}" src confirm
+  [ -n "$id" ] || ask "  Id of the vault to remove: " id
+  src="$(reg list | awk -F'\t' -v i="$id" '$1==i { print $2 }')"
+  [ -n "$src" ] || { echo "  No vault with id '$id'."; return; }
+  ask "  Remove '$id' from the stack? Its files stay in vaults/$id/. [y/N] " confirm
+  case "$confirm" in [yY]*) ;; *) echo "  Kept it."; return ;; esac
+  if [ -n "$(sync_dir "$src")" ] && [ -f "state/$id/sync.env" ]; then
+    vc "$id" "$src" down -v --remove-orphans >/dev/null 2>&1 || true
+  fi
+  reg remove "$id"
+  ok "removed '$id'. Its notes are still in vaults/$id/ and its sync settings in"
+  echo "    state/$id/ — delete those yourself once you're sure."
+}
+
+ensure_all_up() {
+  local id src name
+  while IFS=$'\t' read -r id src name; do
+    [ -n "$id" ] && [ -n "$(sync_dir "$src")" ] || continue
+    if [ ! -f "state/$id/sync.env" ]; then
+      echo "  Warning: vault '$id' has no sync settings (state/$id/sync.env); its sync isn't running."
+      continue
+    fi
+    set_env "state/$id/sync.env" STACK_ID "$STACK_ID"
+    case "$src" in
+      livesync) ensure_couchdb; vc "$id" "$src" up -d >/dev/null 2>&1 ;;
+      livesync-existing) ensure_livesync_network; vc "$id" "$src" up -d >/dev/null 2>&1 ;;
+      *) vc "$id" "$src" up -d --build >/dev/null 2>&1 ;;
+    esac
+    ok "sync running for '$id' ($(source_label "$src"))"
+  done <<< "$(reg list)"
+}
+
+# --- commands ----------------------------------------------------------------
+
+cmd_install() {
+  command -v docker >/dev/null 2>&1 || die "docker is not installed. See https://docs.docker.com/engine/install/"
+  docker compose version >/dev/null 2>&1 || die "docker compose (v2 plugin) is required."
+  command -v openssl >/dev/null 2>&1 || die "openssl is required to generate secrets."
+  command -v curl >/dev/null 2>&1 || die "curl is required."
+
+  say "Setting up the core stack"
+  # The 0.1 layout kept a single vault in ./vault. Adopting it automatically
+  # would mean stopping and rewiring its sync containers, so ask instead.
+  if [ -d vault ] && [ -n "$(ls -A vault 2>/dev/null)" ] && [ ! -f vaults/.registry.json ]; then
+    die "this looks like a 0.1 install with notes in ./vault. Version 0.2 keeps
+  each vault in vaults/<id>/. See \"Upgrading from 0.1\" in README.md, then
+  re-run this script."
+  fi
+  if [ ! -f .env ]; then
+    cp .env.example .env
+    ok "created .env from .env.example"
+  else
+    ok ".env already exists, leaving it alone"
+  fi
+  chmod 600 .env
+  load_env
+  if [ -z "${API_KEY:-}" ]; then set_env .env API_KEY "$(openssl rand -hex 32)"; ok "generated API_KEY"; fi
+  if [ -z "${MCP_BEARER_TOKEN:-}" ]; then set_env .env MCP_BEARER_TOKEN "$(openssl rand -hex 32)"; ok "generated MCP_BEARER_TOKEN"; fi
+  if [ -z "$STACK_ID" ]; then set_env .env STACK_ID "$(openssl rand -hex 8)"; ok "generated STACK_ID (labels this install's containers)"; fi
+  load_env
+
+  # Catch a name collision before docker does. A container is ours if it
+  # carries our STACK_ID label (or, from before labels, our compose project);
+  # anything else with the same name belongs to something else.
+  local foreign="" n owner project
+  for n in "${P}obsidian-api" "${P}obsidian-mcp"; do
+    docker inspect "$n" >/dev/null 2>&1 || continue
+    owner="$(docker inspect -f "{{ index .Config.Labels \"$LABEL.id\" }}" "$n" 2>/dev/null || true)"
+    project="$(docker inspect -f '{{ index .Config.Labels "com.docker.compose.project" }}' "$n" 2>/dev/null || true)"
+    [ "$owner" = "$STACK_ID" ] || { [ -z "$owner" ] && [ "$project" = "${P}obsidian-server-stack" ]; } || foreign="$foreign $n"
+  done
+  if [ -n "$foreign" ]; then
+    die "container name(s) already in use by something else on this machine:
+$(echo "$foreign" | tr ' ' '\n' | sed '/^$/d;s/^/    /')
+  Set INSTANCE_PREFIX in .env (e.g. INSTANCE_PREFIX=test-) to run a second,
+  separate instance alongside the existing one, then re-run this script."
+  fi
+
+  # obsidian-api and every sync container run as uid/gid 1000. If the vault
+  # folders end up owned by someone else (e.g. you ran this as root), every
+  # write fails with EACCES. Found by actually testing this, not guessing.
+  mkdir -p vaults state
+  chmod 700 state
+  own vaults
+
+  say "Starting obsidian-api and obsidian-mcp"
+  # --remove-orphans cleans up containers from older versions of this stack.
+  docker compose up -d --build --remove-orphans
+  reg init
+  local up="" _
+  printf '  waiting for obsidian-mcp'
+  for _ in $(seq 1 30); do
+    if curl -sf "http://localhost:${MCP_PORT:-7002}/health" >/dev/null 2>&1; then up=1; break; fi
+    printf '.'; sleep 1
+  done
+  echo
+  [ -n "$up" ] || die "obsidian-mcp didn't come up — check: $ME logs mcp"
+  ok "obsidian-mcp is up on http://localhost:${MCP_PORT:-7002}/mcp"
+
+  say "Vaults"
+  ensure_all_up
+  if [ -z "$(reg list)" ]; then
+    echo "  No vaults yet — let's add one."
+    add_vault
+  fi
+  [ -t 0 ] && offer_link
+  cmd_menu
+}
+
+offer_link() {
+  local name; name="$(default_link_name)"
+  [ "$(readlink -f "/usr/local/bin/$name" 2>/dev/null)" = "$ROOT/obsidian-stack" ] && return 0
+  ask "  Add an '$name' command to manage this install from anywhere? [Y/n] " ans
+  case "${ans:-y}" in [nN]*) ;; *) cmd_link "$name" || true ;; esac
+}
+
+default_link_name() {
+  # A second install (with a prefix) gets its own command name.
+  if [ -n "$P" ]; then echo "obsidian-stack-${P%-}"; else echo obsidian-stack; fi
+}
+
+cmd_link() {
+  load_env
+  local name="${1:-$(default_link_name)}" target
+  target="/usr/local/bin/$name"
+  if [ -e "$target" ] || [ -L "$target" ]; then
+    if [ "$(readlink -f "$target")" = "$ROOT/obsidian-stack" ]; then ok "$name already points here"; return 0; fi
+    die "$target already exists and points elsewhere. Pick another name: $ME link <name>"
+  fi
+  ln -s "$ROOT/obsidian-stack" "$target" 2>/dev/null || die "couldn't write $target (try with sudo)"
+  ok "added '$name' → $ROOT"
+}
+
+# vault_rows [counts] — one line per vault: id, name, source, sync state
+# (and, with "counts", how many notes are on disk)
+vault_rows() {
+  local lines id src name state extra=""
+  lines="$(reg list)"
+  [ -n "$lines" ] || { echo "  (no vaults yet)"; return; }
+  while IFS=$'\t' read -r id src name; do
+    if [ -z "$(sync_dir "$src")" ]; then state=$'\033[90m○ no sync\033[0m'
+    else state="$(dot "$(ours sync "$id" | head -1)")"; fi
+    [ "${1:-}" = counts ] && extra="$(printf '%6s notes  ' "$(find "vaults/$id" -name '*.md' -not -path '*/.*' 2>/dev/null | wc -l | tr -d ' ')")"
+    printf '  %-20s %-20s %-22s %s%s\n' "$id" "$name" "$(source_label "$src")" "$extra" "$state"
+  done <<< "$lines"
+}
+
+cmd_status() {
+  require_installed
+  say "obsidian-server-stack"
+  echo "  folder:    $ROOT"
+  echo "  prefix:    ${P:-(none)}   stack id: $STACK_ID"
+  local mcp_state
+  if curl -sf "http://localhost:${MCP_PORT:-7002}/health" >/dev/null 2>&1; then mcp_state=$'\033[32mresponding\033[0m'; else mcp_state=$'\033[31mnot responding\033[0m'; fi
+  echo "  MCP:       http://localhost:${MCP_PORT:-7002}/mcp  ($mcp_state)"
+
+  say "Core"
+  local c
+  for c in "${P}obsidian-api" "${P}obsidian-mcp"; do
+    printf '  %-34s %s\n' "$c" "$(dot "$(ours core | grep -x "$c" || true)")"
+  done
+  c="$(ours couchdb | head -1)"
+  [ -n "$c" ] && printf '  %-34s %s\n' "$c" "$(dot "$c")"
+
+  say "Vaults"
+  vault_rows counts
+
+  # containers labelled as ours whose vault is no longer in the registry
+  local known orphan v
+  known="$(reg list | cut -f1)"
+  for orphan in $(docker ps -a --filter "label=$LABEL.id=$STACK_ID" --filter "label=$LABEL.role=sync" --format '{{.Names}}'); do
+    v="$(docker inspect -f "{{ index .Config.Labels \"$LABEL.vault\" }}" "$orphan")"
+    grep -qx "$v" <<< "$known" || warn "$orphan belongs to removed vault '$v' (remove with: docker rm -f $orphan)"
+  done
+}
+
+# Container for a logs/restart target: a vault id, or api | mcp | couchdb
+target_container() {
+  case "$1" in
+    api) ours core | grep -x "${P}obsidian-api" || true ;;
+    mcp) ours core | grep -x "${P}obsidian-mcp" || true ;;
+    couchdb) ours couchdb | head -1 ;;
+    *) ours sync "$1" | head -1 ;;
+  esac
+}
+
+cmd_logs() {
+  require_installed
+  local target="${1:-}" follow="" c src
+  [ -n "$target" ] || die "usage: $ME logs <vault id | api | mcp | couchdb> [-f]"
+  [ "${2:-}" = "-f" ] && follow="-f"
+  src="$(reg list | awk -F'\t' -v i="$target" '$1==i { print $2 }')"
+  if [ "$src" = none ]; then echo "  '$target' has no sync, so there are no sync logs."; return; fi
+  c="$(target_container "$target")"
+  [ -n "$c" ] || die "nothing running for '$target' (vault ids: $(reg list | cut -f1 | tr '\n' ' '))"
+  docker logs --tail 100 $follow "$c" 2>&1
+}
+
+cmd_restart() {
+  require_installed
+  local target="${1:-}" src id name
+  [ -n "$target" ] || die "usage: $ME restart <vault id | api | mcp | couchdb | all>"
+  case "$target" in
+    api) docker compose restart obsidian-api >/dev/null 2>&1; ok "restarted api" ;;
+    mcp) docker compose restart obsidian-mcp >/dev/null 2>&1; ok "restarted mcp" ;;
+    couchdb) ( cd sync/couchdb && docker compose restart couchdb >/dev/null 2>&1 ); ok "restarted couchdb" ;;
+    all)
+      docker compose restart >/dev/null 2>&1; ok "restarted api and mcp"
+      [ -n "$(ours couchdb)" ] && { ( cd sync/couchdb && docker compose restart couchdb >/dev/null 2>&1 ); ok "restarted couchdb"; }
+      while IFS=$'\t' read -r id src name; do
+        [ -n "$id" ] && [ -n "$(sync_dir "$src")" ] && [ -f "state/$id/sync.env" ] || continue
+        vc "$id" "$src" restart >/dev/null 2>&1; ok "restarted sync for '$id'"
+      done <<< "$(reg list)"
+      ;;
+    *)
+      src="$(reg list | awk -F'\t' -v i="$target" '$1==i { print $2 }')"
+      [ -n "$src" ] || die "no vault '$target' (vault ids: $(reg list | cut -f1 | tr '\n' ' '))"
+      [ -n "$(sync_dir "$src")" ] || { echo "  '$target' has no sync to restart."; return; }
+      vc "$target" "$src" restart >/dev/null 2>&1
+      ok "restarted sync for '$target'"
+      ;;
+  esac
+}
+
+cmd_update() {
+  require_installed
+  say "Updating"
+  if [ -d .git ]; then
+    git pull --ff-only || die "git pull failed — resolve that, then run: $ME update"
+  else
+    warn "not a git checkout, so nothing to pull; rebuilding what's here"
+  fi
+  # Re-running install rebuilds the images, recreates the core and brings
+  # every vault's sync up on the new version. Skip its menu.
+  OBSIDIAN_STACK_NO_MENU=1 cmd_install
+}
+
+cmd_endpoint() {
+  require_installed
+  echo "  MCP endpoint:  http://localhost:${MCP_PORT:-7002}/mcp"
+  if [ "${1:-}" = "--show-token" ]; then
+    echo "  Bearer token:  ${MCP_BEARER_TOKEN}"
+  else
+    echo "  Bearer token:  ${MCP_BEARER_TOKEN:0:6}… (MCP_BEARER_TOKEN in .env, or: $ME endpoint --show-token)"
+  fi
+  echo "  Clients send:  Authorization: Bearer <token>"
+}
+
+cmd_menu() {
+  [ -n "${OBSIDIAN_STACK_NO_MENU:-}" ] && return 0
+  require_installed
+  local choice target
+  while :; do
+    say "Vaults  ($ROOT)"
+    vault_rows
+    echo
+    echo "  a) add   r) remove   s) status   l) logs   R) restart   e) endpoint   u) update   q) quit"
+    ask "  > " choice
+    case "${choice:-q}" in
+      a) add_vault ;;
+      r) remove_vault ;;
+      s) cmd_status ;;
+      l) ask "  Logs for (vault id, api, mcp, couchdb): " target; [ -n "$target" ] && { cmd_logs "$target" || true; } ;;
+      R) ask "  Restart (vault id, api, mcp, couchdb, all): " target; [ -n "$target" ] && { cmd_restart "$target" || true; } ;;
+      e) cmd_endpoint ;;
+      u) cmd_update; return ;;
+      *) break ;;
+    esac
+  done
+  say "Done"
+  cmd_endpoint
+}
+
+# --- dispatch ----------------------------------------------------------------
+
+load_env
+cmd="${1:-menu}"
+[ $# -gt 0 ] && shift
+case "$cmd" in
+  install) cmd_install ;;
+  menu) cmd_menu ;;
+  status) cmd_status ;;
+  vaults|list) require_installed; vault_rows ;;
+  add) require_installed; add_vault ;;
+  remove|rm) require_installed; remove_vault "${1:-}" ;;
+  logs) cmd_logs "$@" ;;
+  restart) cmd_restart "$@" ;;
+  update) cmd_update ;;
+  endpoint) cmd_endpoint "$@" ;;
+  link) cmd_link "$@" ;;
+  help|-h|--help) usage ;;
+  *) usage; exit 1 ;;
+esac

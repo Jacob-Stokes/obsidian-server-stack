@@ -6,10 +6,10 @@ The CouchDB setup is adapted from the LiveSync project's own `docker/` folder. S
 
 ## Setup
 
-The root `install.sh` starts this the first time a vault chooses self-hosted LiveSync, generates the password into `.env`, creates the vault's database and prints the settings for the plugin. To run it by hand:
+`obsidian-stack` starts this the first time a vault chooses self-hosted LiveSync, generates the password into `.env`, creates the vault's database and prints the settings for the plugin. To run it by hand:
 
 ```bash
-cp .env.example .env          # then set COUCHDB_PASSWORD
+cp .env.example .env          # then set COUCHDB_PASSWORD, and STACK_ID as in the root .env
 docker network create obsidian-livesync
 docker compose up -d
 ```

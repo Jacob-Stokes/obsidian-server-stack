@@ -6,7 +6,7 @@ The image is built from this folder and installs [`obsidian-headless`](https://w
 
 ## Setup
 
-The root `install.sh` automates every step except entering the Obsidian login. The login is reused for further Official Sync vaults on the same server. Each vault's client is its own compose project, `obsidian-<id>`, with its settings in `state/<id>/sync.env` and its login and sync state in `state/<id>/official/`:
+`obsidian-stack add` automates every step except entering the Obsidian login. The login is reused for further Official Sync vaults on the same server. Each vault's client is its own compose project, `obsidian-<id>`, with its settings in `state/<id>/sync.env` and its login and sync state in `state/<id>/official/`:
 
 ```bash
 vc() { docker compose -p obsidian-<id> --project-directory sync/official-obsidian-sync \

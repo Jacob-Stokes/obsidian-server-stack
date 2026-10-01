@@ -7,7 +7,7 @@ Mirrors a LiveSync database into a vault's folder, `vaults/<id>/`, as real files
 
 ## Setup
 
-The root `install.sh` handles both. Each vault's worker is its own compose project, `obsidian-<id>`, run from this folder with the vault's settings file:
+`obsidian-stack add` handles both. Each vault's worker is its own compose project, `obsidian-<id>`, run from this folder with the vault's settings file:
 
 ```bash
 docker compose -p obsidian-<id> --project-directory sync/livesync \

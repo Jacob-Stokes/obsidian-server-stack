@@ -7,7 +7,7 @@ Keeps a vault in sync with a git repository. The server commits local changes, m
 
 ## Setup
 
-The root `install.sh` handles this, including generating an SSH deploy key. Each vault's sync is its own compose project, `obsidian-<id>`, with its settings in `state/<id>/sync.env` (`GIT_REPO_URL`, `GIT_BRANCH`, `SYNC_INTERVAL`) and its deploy key in `state/<id>/ssh/`:
+`obsidian-stack add` handles this, including generating an SSH deploy key. Each vault's sync is its own compose project, `obsidian-<id>`, with its settings in `state/<id>/sync.env` (`GIT_REPO_URL`, `GIT_BRANCH`, `SYNC_INTERVAL`) and its deploy key in `state/<id>/ssh/`:
 
 ```bash
 docker compose -p obsidian-<id> --project-directory sync/git-sync \

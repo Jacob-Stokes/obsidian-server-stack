@@ -17,6 +17,10 @@ services:
   init:
     image: ghcr.io/vrtmrz/livesync-cli:1.0.21-cli
     container_name: ${INSTANCE_PREFIX:-}obsidian-${VAULT_ID:?}-livesync-init
+    labels:
+      obsidian-server-stack.id: ${STACK_ID:?Set STACK_ID in .env}
+      obsidian-server-stack.vault: ${VAULT_ID:?}
+      obsidian-server-stack.role: sync-init
     restart: on-failure
     entrypoint: ["sh", "-c", "mkdir -p /vault /data && chown -R 1000:1000 /vault /data"]
     volumes:
@@ -27,6 +31,10 @@ services:
   livesync:
     image: ghcr.io/vrtmrz/livesync-cli:1.0.21-cli
     container_name: ${INSTANCE_PREFIX:-}obsidian-${VAULT_ID:?}-livesync
+    labels:
+      obsidian-server-stack.id: ${STACK_ID:?Set STACK_ID in .env}
+      obsidian-server-stack.vault: ${VAULT_ID:?}
+      obsidian-server-stack.role: sync
     restart: unless-stopped
     user: "1000:1000"
     depends_on:

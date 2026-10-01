@@ -3,12 +3,15 @@ name: ${INSTANCE_PREFIX:-}obsidian-server-stack
 services:
   # REST API over the vaults' markdown files. Only reachable inside this
   # compose network — obsidian-mcp is its only client. Each request names a
-  # vault; the list of vaults is vaults/.registry.json, managed by install.sh.
+  # vault; the list of vaults is vaults/.registry.json, managed by obsidian-stack.
   obsidian-api:
     build:
       context: ./services/obsidian-api
     image: ${INSTANCE_PREFIX:-}obsidian-api:local
     container_name: ${INSTANCE_PREFIX:-}obsidian-api
+    labels:
+      obsidian-server-stack.id: ${STACK_ID:?Set STACK_ID in .env}
+      obsidian-server-stack.role: core
     restart: unless-stopped
     environment:
       PORT: 3000
@@ -26,6 +29,9 @@ services:
       context: ./services/obsidian-mcp
     image: ${INSTANCE_PREFIX:-}obsidian-mcp:local
     container_name: ${INSTANCE_PREFIX:-}obsidian-mcp
+    labels:
+      obsidian-server-stack.id: ${STACK_ID:?Set STACK_ID in .env}
+      obsidian-server-stack.role: core
     restart: unless-stopped
     # Passes through optional settings like MCP_OAUTH_* if set in .env.
     env_file:

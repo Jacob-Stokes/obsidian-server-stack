@@ -26,7 +26,7 @@ cd obsidian-server-stack
 
 Requires Linux with Docker (Compose v2), `openssl` and `curl`, plus `ssh-keygen` for git sync. Run as root or with sudo.
 
-The installer generates secrets, starts the core containers, then adds vaults one at a time, each with its own sync source. Once finished, the MCP endpoint is at `http://localhost:7002/mcp`, with its bearer token in `.env`. Re-running the installer adds or removes vaults and restarts any vault's sync that isn't running.
+The installer generates secrets, starts the core containers, adds a first vault, and offers to put an `obsidian-stack` command on the PATH for managing the install afterwards. Once finished, the MCP endpoint is at `http://localhost:7002/mcp`, with its bearer token in `.env`.
 
 To run a second instance on the same machine, set a prefix and port before running `./install.sh`:
 
@@ -34,6 +34,24 @@ To run a second instance on the same machine, set a prefix and port before runni
 cp .env.example .env
 sed -i 's/^INSTANCE_PREFIX=.*/INSTANCE_PREFIX=test-/; s/^MCP_PORT=.*/MCP_PORT=7102/' .env
 ```
+
+## Managing
+
+`obsidian-stack` manages one install: adding and removing vaults, checking sync, reading logs. Run with no arguments, it opens an interactive menu.
+
+| Command | Does |
+|---|---|
+| `obsidian-stack` | Interactive menu |
+| `obsidian-stack status` | Core containers, and each vault's sync state and note count |
+| `obsidian-stack vaults` | List vaults |
+| `obsidian-stack add` / `remove [id]` | Add a vault, or remove one (its files are kept) |
+| `obsidian-stack logs <id\|api\|mcp\|couchdb> [-f]` | Logs for a vault's sync or a core container |
+| `obsidian-stack restart <id\|api\|mcp\|couchdb\|all>` | Restart one part, or everything |
+| `obsidian-stack update` | `git pull`, rebuild, and restart everything on the new version |
+| `obsidian-stack endpoint [--show-token]` | MCP URL and bearer token |
+| `obsidian-stack link [name]` | Add the command to `/usr/local/bin` |
+
+The command always acts on the install it belongs to: the folder it lives in (following the link on the PATH), or one given with `--dir` or `$OBSIDIAN_STACK_DIR`. Every container the stack creates carries a Docker label with the install's `STACK_ID` from `.env`, and the command finds containers by that label rather than by name, so other Obsidian containers on the machine are never affected. A second install with an `INSTANCE_PREFIX` gets its own command, e.g. `obsidian-stack-test`.
 
 ## Vaults
 
@@ -75,9 +93,9 @@ Clients authenticate with `Authorization: Bearer <MCP_BEARER_TOKEN>`. For client
 
 ## Updating and uninstalling
 
-To update, run `git pull && ./install.sh`. The `.env`, vaults and sync settings are preserved, and every vault's sync is restarted on the new version.
+To update, run `obsidian-stack update`. The `.env`, vaults and sync settings are preserved, and every vault's sync is restarted on the new version.
 
-To remove one vault, re-run the installer and choose "remove". Its notes stay in `vaults/<id>/` and its settings in `state/<id>/` until deleted by hand.
+To remove one vault, run `obsidian-stack remove <id>`. Its notes stay in `vaults/<id>/` and its settings in `state/<id>/` until deleted by hand.
 
 To uninstall everything, run `docker compose down` in the repo root, `docker compose down` in `sync/couchdb` if any vault used self-hosted LiveSync, and `docker compose -p obsidian-<id> down` for each vault's sync. Notes remain in `vaults/` as plain markdown. Adding `-v` to the CouchDB `down` deletes its databases; other devices keep their copies.
 

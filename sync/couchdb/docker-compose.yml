@@ -19,6 +19,9 @@ services:
   couchdb:
     image: couchdb:latest
     container_name: ${INSTANCE_PREFIX:-}obsidian-couchdb
+    labels:
+      obsidian-server-stack.id: ${STACK_ID:?Set STACK_ID in .env}
+      obsidian-server-stack.role: couchdb
     restart: unless-stopped
     environment:
       COUCHDB_USER: ${COUCHDB_USER:?Set COUCHDB_USER in .env}
@@ -48,6 +51,9 @@ services:
   couchdb-init:
     image: curlimages/curl:latest
     container_name: ${INSTANCE_PREFIX:-}obsidian-couchdb-init
+    labels:
+      obsidian-server-stack.id: ${STACK_ID:?Set STACK_ID in .env}
+      obsidian-server-stack.role: couchdb-init
     restart: on-failure
     depends_on:
       couchdb:
@@ -66,6 +72,9 @@ services:
   caddy:
     image: caddy:latest
     container_name: ${INSTANCE_PREFIX:-}obsidian-couchdb-caddy
+    labels:
+      obsidian-server-stack.id: ${STACK_ID:?Set STACK_ID in .env}
+      obsidian-server-stack.role: couchdb
     profiles: [caddy]
     restart: unless-stopped
     depends_on:
@@ -88,6 +97,9 @@ services:
   tailscale:
     image: tailscale/tailscale:latest
     container_name: ${INSTANCE_PREFIX:-}obsidian-couchdb-tailscale
+    labels:
+      obsidian-server-stack.id: ${STACK_ID:?Set STACK_ID in .env}
+      obsidian-server-stack.role: couchdb
     profiles: [tailscale]
     restart: unless-stopped
     hostname: ${TS_HOSTNAME:-livesync}
@@ -112,6 +124,9 @@ services:
   cloudflared:
     image: cloudflare/cloudflared:latest
     container_name: ${INSTANCE_PREFIX:-}obsidian-couchdb-cloudflared
+    labels:
+      obsidian-server-stack.id: ${STACK_ID:?Set STACK_ID in .env}
+      obsidian-server-stack.role: couchdb
     profiles: [cloudflare]
     restart: unless-stopped
     command: tunnel --no-autoupdate run

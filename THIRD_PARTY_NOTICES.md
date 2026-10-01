@@ -6,7 +6,7 @@
 are vendored from
 [vrtmrz/obsidian-livesync](https://github.com/vrtmrz/obsidian-livesync)
 (`docker/` folder), MIT licensed. File paths were adjusted to fit this
-repo's layout, the per-vault database is created by `install.sh` rather than
+repo's layout, the per-vault database is created by `obsidian-stack` rather than
 `couchdb-init`, and `couchdb-init`'s readiness check authenticates so it can
 be re-run once authentication is on. The CouchDB configuration is otherwise
 unchanged.
@@ -45,7 +45,7 @@ as any OS package; nothing from those projects is vendored here.
 
 ## Everything else
 
-`services/obsidian-mcp`, `services/obsidian-api`, and `install.sh` are
+`services/obsidian-mcp`, `services/obsidian-api`, `obsidian-stack` and `install.sh` are
 original code, MIT licensed
 (see [LICENSE](LICENSE)). Direct dependency licenses, checked against the
 npm registry: `services/obsidian-mcp` uses
