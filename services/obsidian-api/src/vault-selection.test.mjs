@@ -102,3 +102,20 @@ test("the registry refuses duplicates and bad ids, and suggests readable unique 
   removeVault(root, "work");
   assert.deepEqual(readRegistry(root).vaults, []);
 });
+
+test("notes can be moved into .trash (how deletes work), but .trash and .obsidian stay closed otherwise", async (t) => {
+  const { root, app, headers, write } = fixture(t);
+  addVault(root, { id: "notes", name: "Notes", source: "livesync" });
+  assert.equal((await write("notes", "Gone.md", "bye")).status, 201);
+  const post = (route, body) =>
+    app.request(route, { method: "POST", headers: { ...headers("notes"), "content-type": "application/json" }, body: JSON.stringify(body) });
+
+  assert.equal((await post("/move", { from: "Gone.md", to: ".trash/2026/Gone.md" })).status, 200);
+  assert.ok(fs.existsSync(path.join(root, "notes", ".trash", "2026", "Gone.md")));
+
+  assert.equal((await app.request("/files/.trash/2026/Gone.md", { headers: headers("notes") })).status, 400);
+  assert.equal((await post("/move", { from: ".trash/2026/Gone.md", to: "Back.md" })).status, 400);
+  assert.equal((await post("/copy", { from: "Missing.md", to: ".trash/x.md" })).status, 400);
+  assert.equal((await post("/move", { from: "Missing.md", to: "Sub/.trash/x.md" })).status, 400);
+  assert.equal((await post("/move", { from: "Missing.md", to: ".obsidian/x.md" })).status, 400);
+});

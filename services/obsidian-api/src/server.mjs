@@ -31,13 +31,17 @@ export function createVaultApi(VAULT_PATH, expectedKey = apiKey, scope = "") {
     await next();
   });
   // ── Helpers ───────────────────────────────────────────────────────
-  function resolvePath(p) {
+  // allowTrash: only for a move's destination, which is how notes are
+  // deleted (moved into .trash/). Everything else under .trash stays hidden.
+  function resolvePath(p, { allowTrash = false } = {}) {
     const cleaned = p.replace(/^\/+/, "");
     const resolved = path.resolve(VAULT_PATH, cleaned);
     const root = path.resolve(VAULT_PATH);
     if (resolved !== root && !resolved.startsWith(root + path.sep)) return null;
     if (resolved !== scopedRoot && !resolved.startsWith(scopedRoot + path.sep)) return null;
-    if (cleaned.split("/").some((part) => part === ".obsidian" || part === ".trash")) return null;
+    const segments = cleaned.split("/");
+    if (segments.some((part) => part === ".obsidian")) return null;
+    if (segments.some((part, i) => part === ".trash" && !(allowTrash && i === 0))) return null;
     const parts = path.relative(root, resolved).split(path.sep).filter(Boolean);
     let current = root;
     for (const part of [null, ...parts]) {
@@ -352,7 +356,7 @@ export function createVaultApi(VAULT_PATH, expectedKey = apiKey, scope = "") {
         return c.json({ error: "from and to are required" }, 400);
       }
       const src = resolvePath(body.from);
-      const dst = resolvePath(body.to);
+      const dst = resolvePath(body.to, { allowTrash: mode === "move" });
       if (!src || !dst) return c.json({ error: "Invalid path" }, 400);
       if (!fs.existsSync(src)) return c.json({ error: "Source not found" }, 404);
       if (fs.existsSync(dst) && !body.overwrite) {
