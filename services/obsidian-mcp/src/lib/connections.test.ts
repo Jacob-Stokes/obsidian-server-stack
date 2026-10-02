@@ -42,7 +42,7 @@ function backend(t: test.TestContext) {
 test("one MCP inventory offers vault selection on every content tool", async (t) => {
   const { connections } = backend(t);
   const tools = obsidianTools(connections);
-  assert.equal(new Set(tools.map((tool) => tool.def.name)).size, 24);
+  assert.equal(new Set(tools.map((tool) => tool.def.name)).size, 27);
   assert.equal(tools.filter((tool) => tool.def.name === "obsidian_list_vaults").length, 1);
   for (const tool of tools) {
     if (tool.def.name === "obsidian_list_vaults") continue;

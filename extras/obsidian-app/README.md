@@ -21,7 +21,8 @@ docker compose -p obsidian-<id>-app --project-directory extras/obsidian-app \
 - **Reachable over HTTP:**
   - listing and running commands, filtered by `APP_COMMANDS`;
   - community plugins: search (Obsidian's directory, by downloads), info, install, update, uninstall, enable, disable, and each plugin's settings (`data.json`);
-  - themes and CSS snippets.
+  - themes and CSS snippets;
+  - Bases (list, views, query, create an item), link health (orphans, dead ends, unresolved links) and screenshots of the app.
 
   `APP_EXTENSIONS=read` makes plugins, themes and snippets read-only. `eval` and the other CLI commands are only available through `obsidian-stack app run`.
 - **Workarounds for gaps in the CLI**, all found by testing:

@@ -7,17 +7,26 @@ import { withVaultId } from "./lib/vault-input.js";
 
 import {
   APP_APPEARANCE_TOOL,
+  APP_BASES_TOOL,
   APP_COMMANDS_TOOL,
   APP_PLUGINS_TOOL,
   APP_RUN_COMMAND_TOOL,
+  APP_SCREENSHOT_TOOL,
+  APP_VAULT_HEALTH_TOOL,
   AppAppearanceInput,
+  AppBasesInput,
   AppCommandsInput,
   AppPluginsInput,
   AppRunCommandInput,
+  AppScreenshotInput,
+  AppVaultHealthInput,
   handleAppAppearance,
+  handleAppBases,
   handleAppCommands,
   handleAppPlugins,
-  handleAppRunCommand
+  handleAppRunCommand,
+  handleAppScreenshot,
+  handleAppVaultHealth
 } from "./tools/app.js";
 import { ATTACHMENTS_TOOL, AttachmentsInput, handleAttachments } from "./tools/attachments.js";
 import { BULK_TOOL, BulkInput, handleBulk } from "./tools/bulk.js";
@@ -76,7 +85,10 @@ export const APP_TOOLS = new Set([
   APP_COMMANDS_TOOL.name,
   APP_RUN_COMMAND_TOOL.name,
   APP_PLUGINS_TOOL.name,
-  APP_APPEARANCE_TOOL.name
+  APP_APPEARANCE_TOOL.name,
+  APP_BASES_TOOL.name,
+  APP_VAULT_HEALTH_TOOL.name,
+  APP_SCREENSHOT_TOOL.name
 ]);
 
 export function obsidianTools(connections: VaultConnections): ToolRegistration[] {
@@ -192,6 +204,18 @@ export function obsidianTools(connections: VaultConnections): ToolRegistration[]
         annotations: { ...MUTATING, openWorldHint: true }
       },
       handler: async (i) => handleAppAppearance(await connections.app(i.vault_id), i)
+    },
+    {
+      def: { ...APP_BASES_TOOL, inputSchema: withVaultId(AppBasesInput), annotations: MUTATING },
+      handler: async (i) => handleAppBases(await connections.app(i.vault_id), i)
+    },
+    {
+      def: { ...APP_VAULT_HEALTH_TOOL, inputSchema: withVaultId(AppVaultHealthInput), annotations: READ_ONLY },
+      handler: async (i) => handleAppVaultHealth(await connections.app(i.vault_id), i)
+    },
+    {
+      def: { ...APP_SCREENSHOT_TOOL, inputSchema: withVaultId(AppScreenshotInput), annotations: READ_ONLY },
+      handler: async (i) => handleAppScreenshot(await connections.app(i.vault_id), i)
     },
 
     // Compatibility aliases retained for existing agents and automations.

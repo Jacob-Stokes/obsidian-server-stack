@@ -118,6 +118,9 @@ Everything above works on plain markdown files, with no Obsidian app on the serv
 | `obsidian_app_run_command` | Run a command, optionally on a given note |
 | `obsidian_app_plugins` | Search the community directory; install, update, uninstall, enable and disable plugins; read and change each plugin's settings |
 | `obsidian_app_appearance` | Search, install and switch themes; create, enable, disable and delete CSS snippets |
+| `obsidian_app_bases` | List [Bases](https://obsidian.md/help/bases) and their views, query a view's rows as JSON (exactly as Obsidian evaluates them), and create a note through a base |
+| `obsidian_app_vault_health` | Orphaned notes, dead ends and unresolved links, from Obsidian's own link index |
+| `obsidian_app_screenshot` | An image of the app, optionally after opening a file: canvases, diagrams, Bases, plugin views such as Kanban |
 
 - **Same files, no extra sync:** the app opens `vaults/<id>/` and doesn't sync by itself. The vault's own sync keeps that folder current, and the app picks up changes on disk. Its own sync (LiveSync plugin or Obsidian Sync) is best left off, as it would be a second sync client on the same folder.
 - **Plugins from the other devices (Official Sync):** for an Official Sync vault, enabling the app offers to turn on settings sync as well. The other devices' community plugins, their settings, theme and hotkeys then come to the server, and the app runs them. Like the notes, it's two-way: plugin changes made on the server reach every device. So the same step asks whether the MCP may change plugins, and leaves them read-only unless told otherwise.

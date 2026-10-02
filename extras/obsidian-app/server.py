@@ -10,13 +10,14 @@ app over the app's single-instance socket.
   server.py run <args...>    run one CLI command (used by obsidian-stack)
 
 Only a fixed set of CLI commands is reachable over HTTP: listing and running
-commands, and managing community plugins (with their settings), themes and CSS
-snippets. `eval` and the rest are not. Commands can be narrowed further with
+commands; managing community plugins (with their settings), themes and CSS
+snippets; querying Bases; link health; and screenshots of the app. `eval` and the rest are not. Commands can be narrowed further with
 APP_COMMANDS, a comma-separated list of patterns such as
 "obsidian-linter:*,templater-obsidian:*" (default *). APP_EXTENSIONS=read
 leaves plugins, themes and snippets visible but unchangeable.
 """
 
+import base64
 import fnmatch
 import hmac
 import json
@@ -27,6 +28,7 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -373,6 +375,79 @@ def appearance(body):
     raise ValueError("action must be list, search_themes, install_theme, set_theme, uninstall_theme, create_snippet, enable_snippet, disable_snippet or delete_snippet")
 
 
+# --- Bases, link health, screenshots ------------------------------------------
+
+def vault_path(body, key="path", suffix=None):
+    path = body.get(key)
+    if not isinstance(path, str) or not safe_path(path) or (suffix and not path.endswith(suffix)):
+        raise ValueError(f"{key} must be a vault-relative file path" + (f" ending in {suffix}" if suffix else ""))
+    return path.strip("/")
+
+
+def limit_of(body, default=100, most=1000):
+    return max(1, min(int(body.get("limit", default)), most))
+
+
+def bases(body):
+    action = body.get("action", "list")
+    if action == "list":
+        return {"bases": [l for l in run("bases").splitlines() if l.strip()]}
+    path = vault_path(body, suffix=".base")
+    view = body.get("view")
+    if view is not None and (not isinstance(view, str) or not view.strip() or len(view) > 200):
+        raise ValueError("view must be a view name from action=views")
+    view_arg = [f"view={view}"] if view else []
+    if action == "views":
+        # base:views only reads the base that's open
+        run("open", f"path={path}")
+        views = [dict(zip(("name", "type"), l.split("\t"))) for l in run("base:views").splitlines() if l.strip()]
+        return {"path": path, "views": views}
+    if action == "query":
+        rows = json.loads(run("base:query", f"path={path}", *view_arg, "format=json") or "[]")
+        limit = limit_of(body)
+        return {"path": path, "view": view, "total": len(rows), "rows": rows[:limit], "truncated": len(rows) > limit}
+    if action == "create_item":
+        name = body.get("name")
+        if not isinstance(name, str) or not SNIPPET_NAME.match(name):
+            raise ValueError("name must be a note name: letters, digits, spaces, _ . -")
+        content = body.get("content")
+        if content is not None and (not isinstance(content, str) or len(content) > 100_000):
+            raise ValueError("content must be text (up to 100 KB)")
+        extra = [f"content={content}"] if content else []
+        return {"path": path, "output": run("base:create", f"path={path}", *view_arg, f"name={name}", *extra)}
+    raise ValueError("action must be list, views, query or create_item")
+
+
+def vault_health(body):
+    check = body.get("check")
+    limit = limit_of(body)
+    if check in ("orphans", "deadends"):
+        items = [l for l in run(check).splitlines() if l.strip()]
+    elif check == "unresolved":
+        items = json.loads(run("unresolved", "counts", "verbose", "format=json") or "[]")
+    else:
+        raise ValueError("check must be orphans (no incoming links), deadends (no outgoing links) or unresolved (links to missing notes)")
+    return {"check": check, "total": len(items), "items": items[:limit], "truncated": len(items) > limit}
+
+
+def screenshot(body):
+    if body.get("path") is not None:
+        run("open", f"path={vault_path(body)}")
+    # give the note (and any plugin views, e.g. Kanban, a Base table) time to render
+    time.sleep(max(0, min(int(body.get("wait_ms", 1500)), 10_000)) / 1000)
+    shot = f"/tmp/oss-shot-{uuid.uuid4().hex}.png"
+    try:
+        run("dev:screenshot", f"path={shot}")
+        with open(shot, "rb") as f:
+            data = f.read()
+    finally:
+        try:
+            os.remove(shot)
+        except OSError:
+            pass
+    return {"path": body.get("path"), "mimeType": "image/png", "data": base64.b64encode(data).decode()}
+
+
 def handle(route, body):
     if route == "/commands":
         # Editor commands (most plugin commands) only exist while a note is open.
@@ -402,6 +477,12 @@ def handle(route, body):
         return plugins(body)
     if route == "/appearance":
         return appearance(body)
+    if route == "/bases":
+        return bases(body)
+    if route == "/vault_health":
+        return vault_health(body)
+    if route == "/screenshot":
+        return screenshot(body)
 
     raise LookupError(route)
 

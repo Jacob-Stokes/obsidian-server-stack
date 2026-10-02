@@ -105,6 +105,61 @@ export const APP_APPEARANCE_TOOL = {
   inputSchema: AppAppearanceInput,
 };
 
+const BasePath = z.string().min(1).max(500).describe("Vault-relative path of a .base file, from action=list.");
+
+export const AppBasesInput = z.discriminatedUnion("action", [
+  z.object({ action: z.literal("list") }),
+  z.object({ action: z.literal("views"), path: BasePath }),
+  z.object({
+    action: z.literal("query"),
+    path: BasePath,
+    view: z.string().max(200).optional().describe("View name from action=views; the base's first view if omitted."),
+    limit: z.number().int().min(1).max(1000).optional().describe("Most rows to return (default 100)."),
+  }),
+  z.object({
+    action: z.literal("create_item"),
+    path: BasePath,
+    view: z.string().max(200).optional(),
+    name: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9 _.-]{0,63}$/).describe("Name of the new note."),
+    content: z.string().max(100_000).optional().describe("Initial note body."),
+  }),
+]);
+export const APP_BASES_TOOL = {
+  name: "obsidian_app_bases",
+  description:
+    "Obsidian Bases (.base files: database views over notes), evaluated by the Obsidian app on the server exactly as Obsidian shows them. list: the vault's bases. views: a base's views. query: a view's rows as JSON, each with the note's path and the base's columns (properties and formulas). create_item: create a note in a base, so it gets the folder and properties the base's view expects.",
+  inputSchema: AppBasesInput,
+};
+
+export const AppVaultHealthInput = z.object({
+  check: z
+    .enum(["orphans", "deadends", "unresolved"])
+    .describe("orphans: notes no other note links to. deadends: notes that link to nothing. unresolved: links pointing at notes that don't exist, with where they come from."),
+  limit: z.number().int().min(1).max(1000).optional().describe("Most items to return (default 100)."),
+});
+export const APP_VAULT_HEALTH_TOOL = {
+  name: "obsidian_app_vault_health",
+  description:
+    "Link health for the vault, from the Obsidian app's own link index (which resolves aliases, partial paths and heading links the way Obsidian does). Useful for tidying a vault: finding orphaned notes, dead ends and broken links.",
+  inputSchema: AppVaultHealthInput,
+};
+
+export const AppScreenshotInput = z.object({
+  path: z
+    .string()
+    .min(1)
+    .max(500)
+    .optional()
+    .describe("Vault-relative file to open first (a note, canvas, .base, Kanban board...). Omit to capture whatever is open."),
+  wait_ms: z.number().int().min(0).max(10_000).optional().describe("How long to let it render before capturing (default 1500)."),
+});
+export const APP_SCREENSHOT_TOOL = {
+  name: "obsidian_app_screenshot",
+  description:
+    "A screenshot of the Obsidian app on the server, optionally after opening a file. Shows how Obsidian renders it: canvases, diagrams, Bases tables, plugin views such as Kanban, which can't be judged from the markdown alone. Returns a PNG image.",
+  inputSchema: AppScreenshotInput,
+};
+
 async function call(target: AppTarget, route: string, body: unknown) {
   let res: Response;
   try {
@@ -130,3 +185,15 @@ export const handleAppPlugins = (t: AppTarget, i: z.infer<typeof AppPluginsInput
   call(t, "/plugins", i);
 export const handleAppAppearance = (t: AppTarget, i: z.infer<typeof AppAppearanceInput>) =>
   call(t, "/appearance", i);
+export const handleAppBases = (t: AppTarget, i: z.infer<typeof AppBasesInput>) => call(t, "/bases", i);
+export const handleAppVaultHealth = (t: AppTarget, i: z.infer<typeof AppVaultHealthInput>) =>
+  call(t, "/vault_health", i);
+export async function handleAppScreenshot(t: AppTarget, i: z.infer<typeof AppScreenshotInput>) {
+  const shot = await call(t, "/screenshot", { ...i, ...(i.path ? { path: i.path.replace(/^\/+/, "") } : {}) });
+  return {
+    content: [
+      { type: "image", data: shot.data, mimeType: shot.mimeType },
+      { type: "text", text: i.path ? `Obsidian showing ${i.path}` : "Obsidian as it is now" },
+    ],
+  };
+}
