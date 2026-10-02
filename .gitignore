@@ -9,3 +9,4 @@ vaults/
 state/
 site/
 vaults.compose.yml
+docker-compose.override.yml

@@ -31,6 +31,8 @@ The whole install is one Docker Compose project, in the install folder:
 | `vaults.compose.yml` | Every vault's services (its sync, and the Obsidian app if enabled), CouchDB once a vault needs it, and the manager while it's on. Written by `obsidian-stack` from the vault list, and included by `docker-compose.yml`. |
 | `.env`, `state/<id>/*.env` | Secrets and settings, read by the containers when they start. Neither compose file contains them. |
 
+Local changes (an extra network, another mount, an environment variable) go in `docker-compose.override.yml` next to them, which Docker Compose reads automatically and updates never touch. Services from `vaults.compose.yml` can be extended there by name, e.g. `<id>-sync`.
+
 So `docker compose ps` in the install folder lists everything, `docker compose logs <id>-sync` shows a vault's sync, and `docker compose down` / `up -d` stop and start the whole install. Vaults are changed with `obsidian-stack` (it rewrites `vaults.compose.yml`), but nothing needs it to run.
 
 All of the install's data is inside the folder, none in Docker volumes:
