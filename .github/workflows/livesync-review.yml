@@ -1,0 +1,102 @@
+name: livesync review
+
+# An agent review of each LiveSync version bump (Renovate's pull requests),
+# after the livesync end-to-end test has run on it. CI shows whether the new
+# version works; the review reads what the release changed (database format,
+# Setup URI generator, CLI commands, settings) and says whether the stack
+# needs to change with it. It comments; merging stays a person's decision.
+#
+# Uses CLAUDE_CODE_OAUTH_TOKEN (a Claude subscription token from
+# `claude setup-token`) and the workflow's own GitHub token.
+
+on:
+  workflow_run:
+    workflows: [livesync]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: Pull request number to review
+        required: true
+
+permissions:
+  contents: read
+  pull-requests: write
+  actions: read
+
+jobs:
+  review:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.event == 'pull_request' && startsWith(github.event.workflow_run.head_branch, 'renovate/'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Find the pull request and the test result
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          DISPATCH_PR: ${{ github.event.inputs.pr }}
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+        run: |
+          if [ -n "$DISPATCH_PR" ]; then
+            number="$DISPATCH_PR"
+            branch="$(gh pr view "$number" --repo "$REPO" --json headRefName -q .headRefName)"
+            result="$(gh run list --repo "$REPO" --workflow livesync --branch "$branch" --limit 1 --json conclusion -q '.[0].conclusion // "not run"')"
+          else
+            number="$(gh pr list --repo "$REPO" --head "$HEAD_BRANCH" --json number -q '.[0].number')"
+            result="$CONCLUSION"
+          fi
+          [ -n "$number" ] || { echo "no open pull request found"; exit 1; }
+          echo "number=$number" >> "$GITHUB_OUTPUT"
+          echo "result=$result" >> "$GITHUB_OUTPUT"
+          echo "head=$(gh pr view "$number" --repo "$REPO" --json headRefOid -q .headRefOid)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.pr.outputs.head }}
+
+      - uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ github.token }}
+          allowed_bots: "renovate"
+          claude_args: >-
+            --allowedTools "Read,Grep,Glob,WebFetch,Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr comment:*),Bash(gh release view:*),Bash(gh release list:*),Bash(gh api:*)"
+          prompt: |
+            You are reviewing pull request #${{ steps.pr.outputs.number }} in ${{ github.repository }}, which changes
+            the version of LiveSync (github.com/vrtmrz/obsidian-livesync) that obsidian-server-stack uses.
+            The repository is checked out at the pull request's head.
+
+            The stack builds LiveSync's headless CLI from the release's source (sync/livesync/docker-compose.yml)
+            and pins LiveSync's Setup URI generator to the same release (LIVESYNC_VERSION and GEN_URL in
+            obsidian-stack). Devices run the LiveSync plugin and update it on their own; a newer plugin can
+            upgrade a vault's database past what an older server client reads, which is why the stack follows
+            each release.
+
+            The end-to-end LiveSync test (scripts/test-livesync.sh, the "livesync" workflow) on this pull
+            request finished with: ${{ steps.pr.outputs.result }}.
+
+            1. Read the diff (gh pr diff ${{ steps.pr.outputs.number }}) to get the old and new versions.
+            2. Read what changed in LiveSync between them: the release notes of every version in between
+               (gh release list / gh release view <tag> --repo vrtmrz/obsidian-livesync) and, where notes are
+               thin, the commits (gh api repos/vrtmrz/obsidian-livesync/compare/OLD...NEW --jq '.commits[].commit.message').
+            3. Check that against what the stack depends on, reading the files:
+               - sync/livesync/entrypoint.sh and docker-compose.yml: CLI commands (setup, daemon), the
+                 LIVESYNC_DB_PATH convention, the settings it overrides after importing a Setup URI
+                 (liveSync, periodicReplication, batchSave, syncOnStart), the Dockerfile path src/apps/cli/Dockerfile
+               - obsidian-stack: the generator's environment variables (hostname, username, password, database,
+                 passphrase, uri_mode, id_recovery_code) and the output lines it parses ("Your passphrase for the
+                 Setup URI is:", "ID recovery code:", "obsidian://setuplivesync?settings="); the CLI commands
+                 resync uses (mark-resolved); the log messages sync_problem matches
+               - anything about database format generations, remote feature flags, Setup URI format, CLI
+                 commands, flags or output, settings defaults, or the CLI's Dockerfile and build
+            4. Post exactly one comment on the pull request (gh pr comment). Start with one line:
+               "✅ Safe to merge", "⚠️ Needs attention", or "❌ Don't merge", then short sections:
+               - What changed in LiveSync (only what's relevant to a headless server client)
+               - Impact on the stack, with file:line references
+               - Test result
+               - Changes the stack should make, if any (concrete, with file:line)
+            Be concise and specific. Don't push commits, approve, or merge.
