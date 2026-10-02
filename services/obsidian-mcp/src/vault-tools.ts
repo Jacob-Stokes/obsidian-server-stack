@@ -6,12 +6,15 @@ import { withVaultId } from "./lib/vault-input.js";
 // takes an explicit vault_id; obsidian_list_vaults is how a client finds them.
 
 import {
+  APP_APPEARANCE_TOOL,
   APP_COMMANDS_TOOL,
   APP_PLUGINS_TOOL,
   APP_RUN_COMMAND_TOOL,
+  AppAppearanceInput,
   AppCommandsInput,
   AppPluginsInput,
   AppRunCommandInput,
+  handleAppAppearance,
   handleAppCommands,
   handleAppPlugins,
   handleAppRunCommand
@@ -69,7 +72,12 @@ const IDEMPOTENT_WRITE = {
 } as const;
 const MUTATING = { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false } as const;
 
-export const APP_TOOLS = new Set([APP_COMMANDS_TOOL.name, APP_RUN_COMMAND_TOOL.name, APP_PLUGINS_TOOL.name]);
+export const APP_TOOLS = new Set([
+  APP_COMMANDS_TOOL.name,
+  APP_RUN_COMMAND_TOOL.name,
+  APP_PLUGINS_TOOL.name,
+  APP_APPEARANCE_TOOL.name
+]);
 
 export function obsidianTools(connections: VaultConnections): ToolRegistration[] {
   return [
@@ -176,6 +184,14 @@ export function obsidianTools(connections: VaultConnections): ToolRegistration[]
         annotations: { ...MUTATING, openWorldHint: true }
       },
       handler: async (i) => handleAppPlugins(await connections.app(i.vault_id), i)
+    },
+    {
+      def: {
+        ...APP_APPEARANCE_TOOL,
+        inputSchema: withVaultId(AppAppearanceInput),
+        annotations: { ...MUTATING, openWorldHint: true }
+      },
+      handler: async (i) => handleAppAppearance(await connections.app(i.vault_id), i)
     },
 
     // Compatibility aliases retained for existing agents and automations.

@@ -78,7 +78,7 @@ await startMcp({
       const vaults = await connections.list();
       const apps = vaults.filter((v) => v.app).map((v) => v.id);
       const appNote = apps.length
-        ? ` The Obsidian app also runs on the server for ${apps.join(", ")}: obsidian_app_commands, obsidian_app_run_command and obsidian_app_plugins reach its commands and community plugins.`
+        ? ` The Obsidian app also runs on the server for ${apps.join(", ")}: obsidian_app_commands, obsidian_app_run_command, obsidian_app_plugins and obsidian_app_appearance reach its commands, community plugins, themes and CSS snippets.`
         : "";
       if (vaults.length === 1) {
         const [v] = vaults;

@@ -18,4 +18,15 @@ docker compose -p obsidian-<id>-app --project-directory extras/obsidian-app \
   - The Obsidian CLI reaches the running app through a socket in `/tmp` and a lock that names the app's hostname and process id. A CLI started anywhere it can't see those starts a second copy of Obsidian instead.
   - So the service lives inside the app's container rather than in a separate one, and checks before every call that the app holding the lock is alive.
   - It also relaunches Obsidian if it exits, which is what happens when its window is closed in the browser.
-- **Reachable over HTTP:** listing and running commands (filtered by `APP_COMMANDS`), and listing, installing, enabling and disabling plugins. `eval` and the other CLI commands are only available through `obsidian-stack app run`.
+- **Reachable over HTTP:**
+  - listing and running commands, filtered by `APP_COMMANDS`;
+  - community plugins: search (Obsidian's directory, by downloads), info, install, update, uninstall, enable, disable, and each plugin's settings (`data.json`);
+  - themes and CSS snippets.
+
+  `APP_EXTENSIONS=read` makes plugins, themes and snippets read-only. `eval` and the other CLI commands are only available through `obsidian-stack app run`.
+- **Workarounds for gaps in the CLI**, all found by testing:
+  - Installs finish after the CLI returns, so the service waits for the plugin or theme to appear.
+  - There's no update command, so `update` reinstalls the plugin and restores its settings.
+  - Some listings ignore `format=json`.
+  - Obsidian doesn't always notice a new snippet file, so the service asks it to rescan (`app.customCss.readSnippets()`, the only `eval` it runs).
+  - Plugin settings are written with the plugin switched off, so it can't save its old copy over them.

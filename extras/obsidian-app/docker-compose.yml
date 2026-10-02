@@ -37,9 +37,11 @@ services:
       # Login for the browser UI.
       CUSTOM_USER: ${APP_USER:-obsidian}
       PASSWORD: ${APP_PASSWORD:?}
-      # For the CLI service: obsidian-mcp's token, and which commands it may run.
+      # For the CLI service: obsidian-mcp's token, which commands it may run,
+      # and whether it may change plugins, themes and snippets (manage|read).
       APP_TOKEN: ${OBSIDIAN_APP_TOKEN:?}
       APP_COMMANDS: ${APP_COMMANDS:-*}
+      APP_EXTENSIONS: ${APP_EXTENSIONS:-manage}
     volumes:
       - ${VAULT_DIR:?}:/vault
       # Obsidian's own settings: which vault to open, CLI switched on.

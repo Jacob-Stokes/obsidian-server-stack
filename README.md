@@ -100,10 +100,18 @@ The command always acts on the install it belongs to: the folder it lives in (fo
 Everything above works on plain markdown files, with no Obsidian app on the server. Some things only the app can do: running community plugins such as [Linter](https://github.com/platers/obsidian-linter) or [Templater](https://github.com/SilentVoid13/Templater), or any command from the command palette. For those, `obsidian-stack app enable <id>` adds the full Obsidian app for one vault:
 
 - **In a browser tab:** [LinuxServer.io's Obsidian image](https://docs.linuxserver.io/images/docker-obsidian/) runs the desktop app on the server, at `http://localhost:7300` behind a generated login (in `state/<id>/app.env`). Like the MCP, it listens on localhost only.
-- **Driven by the MCP:** a small service in the same container runs commands through the [official Obsidian CLI](https://obsidian.md/help/cli). Three tools appear for vaults with the app: `obsidian_app_commands` (list commands, including plugins' commands), `obsidian_app_run_command` (run one, optionally on a given note) and `obsidian_app_plugins` (list, install, enable and disable community plugins).
+- **Driven by the MCP:** a small service in the same container works through the [official Obsidian CLI](https://obsidian.md/help/cli). Four tools appear for vaults with the app:
+
+| Tool | Does |
+|---|---|
+| `obsidian_app_commands` | List commands, including plugins' commands (pass a note to see the ones that act on a note) |
+| `obsidian_app_run_command` | Run a command, optionally on a given note |
+| `obsidian_app_plugins` | Search the community directory; install, update, uninstall, enable and disable plugins; read and change each plugin's settings |
+| `obsidian_app_appearance` | Search, install and switch themes; create, enable, disable and delete CSS snippets |
+
 - **Same files, no extra sync:** the app opens `vaults/<id>/` and doesn't sync by itself. The vault's own sync keeps that folder current, and the app picks up changes on disk. Its own sync (LiveSync plugin or Obsidian Sync) is best left off, as it would be a second sync client on the same folder.
 
-Enabling it asks whether to turn off Obsidian's restricted mode, which otherwise keeps community plugins from running. Plugins are code from their authors, and with restricted mode off they run on the server with access to the vault. `APP_COMMANDS` in `state/<id>/app.env` limits which commands the MCP may run (for example `obsidian-linter:*,editor:*`); arbitrary JavaScript (`eval`) is never exposed. `obsidian-stack app run <id> <command>` runs any Obsidian CLI command directly, e.g. `plugins:restrict off`.
+Enabling it asks whether to turn off Obsidian's restricted mode, which otherwise keeps community plugins from running. Plugins are code from their authors, and with restricted mode off they run on the server with access to the vault. Two settings in `state/<id>/app.env` limit what the MCP may do: `APP_COMMANDS` lists the commands it may run (for example `obsidian-linter:*,editor:*`), and `APP_EXTENSIONS=read` lets it see plugins, themes and snippets but not change them. Arbitrary JavaScript (`eval`) is never exposed. `obsidian-stack app run <id> <command>` runs any Obsidian CLI command directly, e.g. `plugins:restrict off`.
 
 It costs about 350 MB of RAM per vault while idle, more while the browser tab is open, plus a 1.3 GB image. If Obsidian exits, including when its window is closed in the browser, it is reopened within about 30 seconds.
 
