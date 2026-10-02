@@ -1,0 +1,59 @@
+# One vault synced with Official Obsidian Sync and served over MCP, as a
+# plain compose file: no installer, no generated state. Builds from this
+# repository's source at a release tag; to upgrade, change the tag in the
+# three build contexts and run `docker compose up -d --build`.
+#
+# .env next to this file:
+#   (sign in once first: docker compose run --rm obsidian-sync get-token)
+#   VAULT_NAME=            the vault's name in Obsidian Sync
+#   VAULT_PASSWORD=        its end-to-end encryption password, if any
+#   API_KEY=               openssl rand -hex 32
+#   MCP_BEARER_TOKEN=      openssl rand -hex 32
+name: obsidian
+
+services:
+  obsidian-sync:
+    build:
+      context: https://github.com/Jacob-Stokes/obsidian-server-stack.git#v0.2.0:sync/official-obsidian-sync
+    image: obsidian-official-sync:v0.2.0
+    restart: unless-stopped
+    environment:
+      OBSIDIAN_AUTH_TOKEN: ${OBSIDIAN_AUTH_TOKEN:-}
+      VAULT_NAME: ${VAULT_NAME:?}
+      VAULT_PASSWORD: ${VAULT_PASSWORD:-}
+      DEVICE_NAME: server
+    volumes:
+      - vault:/vault
+      - sync-state:/data
+
+  obsidian-api:
+    build:
+      context: https://github.com/Jacob-Stokes/obsidian-server-stack.git#v0.2.0:services/obsidian-api
+    image: obsidian-api:v0.2.0
+    restart: unless-stopped
+    environment:
+      VAULTS_ROOT: /vaults
+      # id[:source[:name]], comma-separated; each vault is /vaults/<id>
+      VAULTS: notes:official
+      API_KEY: ${API_KEY:?}
+    volumes:
+      - vault:/vaults/notes
+
+  obsidian-mcp:
+    build:
+      context: https://github.com/Jacob-Stokes/obsidian-server-stack.git#v0.2.0:services/obsidian-mcp
+    image: obsidian-mcp:v0.2.0
+    restart: unless-stopped
+    environment:
+      OBSIDIAN_BASE_URL: http://obsidian-api:3000
+      OBSIDIAN_API_KEY: ${API_KEY:?}
+      MCP_BEARER_TOKEN: ${MCP_BEARER_TOKEN:?}
+      OBSIDIAN_TIMEZONE: UTC
+    ports:
+      - "127.0.0.1:7002:7002"
+    depends_on:
+      - obsidian-api
+
+volumes:
+  vault:
+  sync-state:

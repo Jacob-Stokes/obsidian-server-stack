@@ -173,6 +173,15 @@ sed -i 's/^INSTANCE_PREFIX=.*/INSTANCE_PREFIX=test-/; s/^MCP_PORT=.*/MCP_PORT=71
 
 Its containers, networks and volumes get the prefix, and its command is named after it, e.g. `obsidian-stack-test`. If both use self-hosted LiveSync, the second also needs a different `COUCHDB_PORT` in `sync/couchdb/.env`.
 
+## Without the installer
+
+The services are ordinary compose services, and Docker Compose can build them straight from this repository at a release tag, so a deployment can also be a single hand-written compose file: [examples/compose.yml](examples/compose.yml) serves one Official Sync vault. Without `obsidian-stack`, the vault list comes from the environment instead of `vaults/.registry.json`:
+
+- `VAULTS` (obsidian-api): `id[:source[:name]]`, comma-separated, e.g. `notes:official,work:livesync:Work notes`. Each vault's folder is `<VAULTS_ROOT>/<id>`. While it's set, the registry file isn't used and `obsidian-stack` can't change the vaults.
+- `CONFIG_PATHS` (obsidian-api, optional): folders inside `.obsidian` that the API may read and write, comma-separated, e.g. `.obsidian/icons` for an icon plugin's custom icons. The rest of `.obsidian` stays out of reach.
+
+The installer's helpers (Setup URIs, `resync`, the manager, `app enable`) aren't available this way; the Obsidian app add-on is a compose file of its own, in `extras/obsidian-app`.
+
 ## Reaching the MCP
 
 The MCP listens on `localhost:7002` only. Remote access is left to an existing tool, such as:

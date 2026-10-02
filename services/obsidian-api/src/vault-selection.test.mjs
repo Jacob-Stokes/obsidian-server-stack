@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { addVault, availableVaults, readRegistry, registryPath, removeVault, renameVault, setApp, suggestId } from "./registry.mjs";
-import { createApi } from "./server.mjs";
+import { createApi, parseConfigPaths } from "./server.mjs";
 
 function fixture(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "obsidian-vaults-"));
@@ -170,4 +170,34 @@ test("VAULTS in the environment sets the vault list in place of the registry fil
   const broken = await app.request("/vaults", { headers: { "x-api-key": "test-key" } });
   assert.equal(broken.status, 503);
   assert.match((await broken.json()).error, /^VAULTS:/);
+});
+
+test("CONFIG_PATHS opens named folders under .obsidian, and only those", async (t) => {
+  const { root, app, headers, write } = fixture(t);
+  addVault(root, { id: "main", name: "Main", source: "official" });
+  fs.mkdirSync(path.join(root, "main", ".obsidian"), { recursive: true });
+  fs.writeFileSync(path.join(root, "main", ".obsidian", "app.json"), "{}");
+
+  assert.equal((await write("main", ".obsidian/icons/self-host/A.svg", "<svg/>")).status, 400, "closed by default");
+
+  process.env.CONFIG_PATHS = ".obsidian/icons";
+  t.after(() => delete process.env.CONFIG_PATHS);
+  const fresh = createApi({ vaultsRoot: root, expectedKey: () => "test-key" });
+  const put = (file) =>
+    fresh.request(`/files/${encodeURIComponent(file)}`, {
+      method: "PUT",
+      headers: { ...headers("main"), "content-type": "application/json" },
+      body: JSON.stringify({ content: "<svg/>" }),
+    });
+  assert.equal((await put(".obsidian/icons/self-host/A.svg")).status, 201);
+  assert.equal(fs.readFileSync(path.join(root, "main", ".obsidian/icons/self-host/A.svg"), "utf8"), "<svg/>");
+  assert.equal((await fresh.request(`/files/${encodeURIComponent(".obsidian/icons/self-host/A.svg")}`, { headers: headers("main") })).status, 200);
+  for (const blocked of [".obsidian/app.json", ".obsidian/plugins/x/main.js", ".obsidian/icons-evil/x.svg", ".obsidian/icons/../app.json", "x/../.obsidian/app.json"]) {
+    assert.equal((await fresh.request(`/files/${encodeURIComponent(blocked)}`, { headers: headers("main") })).status, 400, blocked);
+  }
+
+  for (const bad of [".obsidian", "notes", ".obsidian/../x", ".trash/x"]) {
+    process.env.CONFIG_PATHS = bad;
+    assert.throws(() => parseConfigPaths(process.env.CONFIG_PATHS), /CONFIG_PATHS/, bad);
+  }
 });

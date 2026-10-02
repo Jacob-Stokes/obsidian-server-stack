@@ -14,11 +14,30 @@ function apiKey() {
   return API_KEY;
 }
 
+// Folders under .obsidian the API may read and write, from CONFIG_PATHS
+// (comma-separated, e.g. ".obsidian/icons" for an icon plugin's custom
+// icons). The rest of .obsidian (settings, plugins, workspace) stays out of
+// reach. Returns each folder as path segments.
+export function parseConfigPaths(spec) {
+  return spec
+    .split(",")
+    .map((entry) => entry.trim().replace(/^\/+|\/+$/g, ""))
+    .filter(Boolean)
+    .map((entry) => {
+      const parts = entry.split("/");
+      if (parts[0] !== ".obsidian" || parts.length < 2 || parts.some((p) => !p || p === "." || p === ".." || p.includes("\\"))) {
+        throw new Error(`CONFIG_PATHS: "${entry}" must be a folder inside .obsidian, e.g. .obsidian/icons`);
+      }
+      return parts;
+    });
+}
+
 // One vault's REST API, rooted at VAULT_PATH and (optionally) confined to the
 // `scope` folder inside it. createApi() below routes each request to one of
 // these by vault id.
 export function createVaultApi(VAULT_PATH, expectedKey = apiKey, scope = "") {
   const scopedRoot = path.resolve(VAULT_PATH, scope);
+  const configPaths = parseConfigPaths(process.env.CONFIG_PATHS || "");
   const app = new Hono();
   // ── Auth ──────────────────────────────────────────────────────────
   app.use("*", async (c, next) => {
@@ -40,9 +59,10 @@ export function createVaultApi(VAULT_PATH, expectedKey = apiKey, scope = "") {
     if (resolved !== root && !resolved.startsWith(root + path.sep)) return null;
     if (resolved !== scopedRoot && !resolved.startsWith(scopedRoot + path.sep)) return null;
     const segments = cleaned.split("/");
-    if (segments.some((part) => part === ".obsidian")) return null;
-    if (segments.some((part, i) => part === ".trash" && !(allowTrash && i === 0))) return null;
     const parts = path.relative(root, resolved).split(path.sep).filter(Boolean);
+    const inConfigPath = configPaths.some((folder) => folder.every((part, i) => parts[i] === part));
+    if (segments.some((part) => part === ".obsidian") && !inConfigPath) return null;
+    if (segments.some((part, i) => part === ".trash" && !(allowTrash && i === 0))) return null;
     let current = root;
     for (const part of [null, ...parts]) {
       if (part !== null) current = path.join(current, part);
@@ -669,6 +689,7 @@ export function createApi({ vaultsRoot = "/vaults", expectedKey = apiKey } = {})
 if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {
   // A mistake in VAULTS stops the container here rather than failing every request.
   if (process.env.VAULTS) registryFromEnv(process.env.VAULTS);
+  parseConfigPaths(process.env.CONFIG_PATHS || "");
   const app = createApi({ vaultsRoot: process.env.VAULTS_ROOT || "/vaults" });
   console.log(`obsidian-api listening on :${PORT}`);
   serve({ fetch: app.fetch, port: PORT });

@@ -30,6 +30,12 @@ if [ "$1" = "list-vaults" ]; then
   exit 0
 fi
 
+# Signed in with get-token instead of OBSIDIAN_AUTH_TOKEN: use the saved token.
+TOKEN_FILE="${XDG_CONFIG_HOME}/obsidian-headless/auth_token"
+if [ -z "${OBSIDIAN_AUTH_TOKEN:-}" ] && [ -s "$TOKEN_FILE" ]; then
+  OBSIDIAN_AUTH_TOKEN="$(cat "$TOKEN_FILE")"
+  export OBSIDIAN_AUTH_TOKEN
+fi
 [ -n "${OBSIDIAN_AUTH_TOKEN:-}" ] || { echo "OBSIDIAN_AUTH_TOKEN is not set. Run: docker compose run --rm obsidian-sync get-token" >&2; exit 1; }
 [ -n "${VAULT_NAME:-}" ] || { echo "VAULT_NAME is not set — add it to the vault's state/<id>/sync.env (see README.md)." >&2; exit 1; }
 
