@@ -48,6 +48,10 @@ services:
       # <prefix>obsidian-<vault id>-app, and share this token.
       OBSIDIAN_APP_HOST_PREFIX: ${INSTANCE_PREFIX:-}
       OBSIDIAN_APP_TOKEN: ${OBSIDIAN_APP_TOKEN:-}
+      # For the optional manager add-on (extras/manager); its tools are only
+      # offered when OBSIDIAN_MANAGER_TOKEN is set.
+      OBSIDIAN_MANAGER_URL: http://${INSTANCE_PREFIX:-}obsidian-manager:7320
+      OBSIDIAN_MANAGER_TOKEN: ${OBSIDIAN_MANAGER_TOKEN:-}
     ports:
       - "127.0.0.1:${MCP_PORT:-7002}:7002"
     depends_on:

@@ -222,6 +222,8 @@ Usage: obsidian-stack [--dir PATH] [command]
                       notes are kept unless asked (--yes: no prompts, keep data)
   endpoint [--show-token]
                       MCP URL and bearer token
+  manager [status]    optional: let AI tools manage this install (opt-in):
+  manager enable|disable
   licenses [--full]   licences of the stack and what it uses (--full: texts)
   link [NAME]         put this install's obsidian-stack on PATH
                       (/usr/local/bin/NAME, default obsidian-stack)
@@ -266,6 +268,8 @@ load_env() {
   [ -f .env ] && source .env
   P="${INSTANCE_PREFIX:-}"
   STACK_ID="${STACK_ID:-}"
+  # The MCP is checked at localhost, except from inside the manager add-on
+  MCP_HEALTH="${OBSIDIAN_MCP_HEALTH_URL:-http://localhost:${MCP_PORT:-7002}/health}"
 }
 
 require_installed() {
@@ -789,6 +793,12 @@ EOF
     *) info "Not a choice, nothing added."; return ;;
   esac
   say "Setting up '$name' $(printf '%s(%s, id: %s)%s' "$C_DIM" "$(source_label "$src")" "$id" "$C_0")"
+  # Values with no default, checked before anything is created, so a refused
+  # add leaves nothing behind.
+  [ "$src" = git ] && need git-repo "the repository URL"
+  if [ "$src" = official ] && [ -n "$NONINTERACTIVE" ] && ! ls state/*/official/config/obsidian-headless/auth_token >/dev/null 2>&1; then
+    die "no Obsidian account is signed in on this server to reuse; add an Official Sync vault interactively first ($ME add)"
+  fi
 
   mkdir -p "vaults/$id"
   own "vaults/$id"
@@ -864,6 +874,9 @@ ensure_all_up() {
     step "Obsidian app for '$id'" ac "$id" --progress plain up -d --remove-orphans --force-recreate \
       || warn "The Obsidian app for '$id' didn't start; see above"
   done
+  if manager_on; then
+    step "Manager" mc --progress plain up -d --build --force-recreate || warn "The manager didn't start; see above"
+  fi
 }
 
 # --- Obsidian app add-on (extras/obsidian-app) -------------------------------
@@ -890,9 +903,13 @@ app_cli() {
 app_env() { grep "^$2=" "state/$1/app.env" 2>/dev/null | cut -d= -f2- | tr -d '"'; }
 
 next_app_port() {
-  local port=7300 f used
-  used="$(cat state/*/app.env 2>/dev/null | sed -n 's/^APP_PORT="\{0,1\}\([0-9]*\).*/\1/p')"
-  while grep -qx "$port" <<< "$used" || ss -ltn 2>/dev/null | awk '{print $4}' | grep -q ":$port\$"; do
+  local port=7300 used
+  # ports this install's apps use, ports any container publishes (seen from
+  # the manager add-on too, unlike ss), and ports host processes listen on
+  used="$(cat state/*/app.env 2>/dev/null | sed -n 's/^APP_PORT="\{0,1\}\([0-9]*\).*/\1/p'
+          docker ps --format '{{.Ports}}' 2>/dev/null | grep -oE ':[0-9]+->' | sed 's/[^0-9]//g'
+          ss -ltn 2>/dev/null | awk 'NR > 1 {print $4}' | sed 's/.*://')"
+  while grep -qx "$port" <<< "$used"; do
     port=$((port + 1))
   done
   echo "$port"
@@ -1052,6 +1069,78 @@ cmd_app() {
   esac
 }
 
+# --- manager add-on (extras/manager) -------------------------------------------
+#
+# Optional: lets obsidian-mcp manage this install through a fixed list of
+# operations, each an `obsidian-stack ... --yes` run. It holds the Docker
+# socket (root-equivalent), so it's off unless turned on here. See
+# docs/decisions/001-mcp-stack-management.md.
+
+mc() {
+  STACK_DIR="$ROOT" docker compose -p "${P}obsidian-manager" --project-directory extras/manager \
+    -f extras/manager/docker-compose.yml --env-file .env "$@"
+}
+
+manager_on() { [ -n "${OBSIDIAN_MANAGER_TOKEN:-}" ]; }
+
+manager_enable() {
+  local ans
+  say "Manager ${C_DIM}(lets AI tools manage this install)${C_0}"
+  para <<EOF
+With the manager on, AI tools connected to this MCP can add, rename and
+remove vaults, restart sync, turn the Obsidian app on or off, and make
+Setup URIs, through a fixed list of operations. They can't delete notes,
+uninstall, update, or run anything else.
+
+${C_WARN}Know before turning it on:${C_0}
+- It runs obsidian-stack with access to Docker, which is root-equivalent on
+  this server. Anyone holding the MCP's bearer token (or its OAuth login)
+  gets these operations, so keep the MCP private or behind OAuth.
+- Setup URIs and their passphrases are returned to the AI client, so they
+  appear in that conversation.
+- Official Sync vaults can only be added by reusing an account already
+  signed in here; no Obsidian password goes through it.
+EOF
+  echo
+  ask "Turn the manager on? [y/N] " ans confirm
+  case "$ans" in [yY]*) ;; *) info "Left off."; return ;; esac
+
+  if [ -z "${OBSIDIAN_MANAGER_TOKEN:-}" ]; then
+    set_env .env OBSIDIAN_MANAGER_TOKEN "$(openssl rand -hex 32)" force
+    ok "Generated the manager token (OBSIDIAN_MANAGER_TOKEN)"
+  fi
+  # installs from before the app token was made at install time
+  [ -n "${OBSIDIAN_APP_TOKEN:-}" ] || set_env .env OBSIDIAN_APP_TOKEN "$(openssl rand -hex 32)" force
+  load_env
+  step "Updating obsidian-mcp for the manager" docker compose --progress plain up -d || die "couldn't restart the core stack"
+  step "Building and starting the manager" mc --progress plain up -d --build || die "the manager didn't start"
+  step "Checking the manager" until_ok 15 docker exec "${P}obsidian-manager" python3 /manager/manager.py health \
+    || die "the manager isn't answering — check: docker logs ${P}obsidian-manager"
+  ok "The manager is on. AI tools get the obsidian_stack_* tools on their next connection."
+}
+
+manager_disable() {
+  manager_on || { info "The manager is off."; return; }
+  step "Stopping the manager" mc down --remove-orphans || true
+  set_env .env OBSIDIAN_MANAGER_TOKEN "" force
+  load_env
+  step "Updating obsidian-mcp" docker compose --progress plain up -d || die "couldn't restart the core stack"
+  ok "The manager is off; AI tools no longer get the obsidian_stack_* tools."
+}
+
+cmd_manager() {
+  require_installed
+  case "${1:-status}" in
+    enable|on) manager_enable ;;
+    disable|off) manager_disable ;;
+    status)
+      say "Manager"
+      if manager_on; then printf '  %-34s %s\n' "${P}obsidian-manager" "$(dot "$(ours manager | head -1)")"
+      else info "Off. Turn on with: $ME manager enable"; fi ;;
+    *) die "usage: $ME manager <status | enable | disable>" ;;
+  esac
+}
+
 # --- machine-readable output (--json), for scripts and the manager add-on ----
 
 json_str() { local v="${1//\\/\\\\}"; v="${v//\"/\\\"}"; v="${v//$'\n'/\\n}"; printf '"%s"' "$v"; }
@@ -1087,7 +1176,7 @@ vaults_json() {
 
 status_json() {
   local mcp=false
-  curl -sf "http://localhost:${MCP_PORT:-7002}/health" >/dev/null 2>&1 && mcp=true
+  curl -sf "$MCP_HEALTH" >/dev/null 2>&1 && mcp=true
   printf '{"folder":%s,"prefix":%s,"mcp":{"url":%s,"responding":%s},"core":{"api":' \
     "$(json_str "$ROOT")" "$(json_str "$P")" "$(json_str "http://localhost:${MCP_PORT:-7002}/mcp")" "$mcp"
   container_json "$(ours core | grep -x "${P}obsidian-api" || true)"; printf ',"mcp":'
@@ -1129,6 +1218,10 @@ cmd_install() {
   if [ -z "${API_KEY:-}" ]; then set_env .env API_KEY "$(openssl rand -hex 32)"; ok "Generated the internal API key"; fi
   if [ -z "${MCP_BEARER_TOKEN:-}" ]; then set_env .env MCP_BEARER_TOKEN "$(openssl rand -hex 32)"; ok "Generated the MCP bearer token"; fi
   if [ -z "$STACK_ID" ]; then set_env .env STACK_ID "$(openssl rand -hex 8)"; ok "Generated this install's id ${C_DIM}(labels its containers)${C_0}"; fi
+  # Made now rather than when the first app is enabled, so enabling one
+  # never needs obsidian-mcp restarted (which, through the manager add-on,
+  # would cut off the very request doing it).
+  if [ -z "${OBSIDIAN_APP_TOKEN:-}" ]; then set_env .env OBSIDIAN_APP_TOKEN "$(openssl rand -hex 32)"; ok "Generated the Obsidian app token"; fi
   load_env
 
   # Catch a name collision before docker does. A container is ours if it
@@ -1234,7 +1327,7 @@ cmd_status() {
   [ -n "$JSON" ] && { status_json; return; }
   say "obsidian-server-stack"
   local mcp_state
-  if curl -sf "http://localhost:${MCP_PORT:-7002}/health" >/dev/null 2>&1; then mcp_state="${C_OK}● responding${C_0}"; else mcp_state="${C_ERR}● not responding${C_0}"; fi
+  if curl -sf "$MCP_HEALTH" >/dev/null 2>&1; then mcp_state="${C_OK}● responding${C_0}"; else mcp_state="${C_ERR}● not responding${C_0}"; fi
   kv "Folder" "$ROOT"
   kv "Prefix" "${P:-(none)}  ${C_DIM}·  install id $STACK_ID${C_0}"
   kv "MCP" "http://localhost:${MCP_PORT:-7002}/mcp  $mcp_state"
@@ -1245,6 +1338,8 @@ cmd_status() {
     printf '  %-34s %s\n' "$c" "$(dot "$(ours core | grep -x "$c" || true)")"
   done
   c="$(ours couchdb | head -1)"
+  [ -n "$c" ] && printf '  %-34s %s\n' "$c" "$(dot "$c")"
+  c="$(ours manager | head -1)"
   [ -n "$c" ] && printf '  %-34s %s\n' "$c" "$(dot "$c")"
 
   say "Vaults"
@@ -1382,7 +1477,7 @@ cmd_uninstall() {
   done
   docker network rm "${P}obsidian-livesync" >/dev/null 2>&1 && ok "Removed network ${P}obsidian-livesync"
   docker volume rm "${P}obsidian-deno-cache" >/dev/null 2>&1 || true
-  docker rmi "${P}obsidian-official-sync:local" "${P}obsidian-git-sync:local" >/dev/null 2>&1 || true
+  docker rmi "${P}obsidian-official-sync:local" "${P}obsidian-git-sync:local" "${P}obsidian-manager:local" >/dev/null 2>&1 || true
 
   for link in /usr/local/bin/*; do
     [ -L "$link" ] && [ "$(readlink -f "$link")" = "$ROOT/obsidian-stack" ] || continue
@@ -1426,6 +1521,7 @@ cmd_licenses() {
   lic "Obsidian desktop app" "Proprietary, Dynalist Inc." "inside that image; not included"
   lic "Caddy / Tailscale / cloudflared" "Apache-2.0 / BSD-3 / Apache-2.0" "optional HTTPS for CouchDB"
   lic "git, OpenSSH (Alpine packages)" "GPL-2.0 / BSD" "installed in the git-sync image"
+  lic "docker:cli image" "Apache-2.0" "base of the optional manager"
   lic "@modelcontextprotocol/sdk, zod, jose" "MIT" "npm, in the MCP image"
   lic "yaml" "ISC" "npm, in the MCP image"
   lic "hono, @hono/node-server" "MIT" "npm, in the API image"
@@ -1523,6 +1619,7 @@ case "$cmd" in
   status) cmd_status ;;
   vaults|list) require_installed; if [ -n "$JSON" ]; then vaults_json; else vault_rows; fi ;;
   rename) cmd_rename "$@" ;;
+  manager) cmd_manager "$@" ;;
   add) require_installed; add_vault ;;
   remove|rm) require_installed; remove_vault "${1:-}" ;;
   logs) cmd_logs "$@" ;;

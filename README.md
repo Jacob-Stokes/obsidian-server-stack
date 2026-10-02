@@ -107,8 +107,11 @@ To give CouchDB an HTTPS address, `sync/couchdb` has optional profiles for [Tail
 | `obsidian-stack update` | `git pull`, rebuild, and restart everything on the new version |
 | `obsidian-stack endpoint [--show-token]` | MCP URL and bearer token |
 | `obsidian-stack link [name]` | Add the command to `/usr/local/bin` |
+| `obsidian-stack manager enable\|disable` | Let AI tools manage this install ([below](#managing-the-stack-from-ai-tools-optional)) |
 | `obsidian-stack licenses [--full]` | Licences of the stack and of everything it uses; `--full` shows the full texts |
 | `obsidian-stack uninstall [--yes]` | Remove the install's containers, images and command; notes are kept unless chosen |
+
+Every question it asks can also be answered with an option, for scripts: `obsidian-stack add --yes --name Work --source livesync --device-url https://couchdb.example.com` (`obsidian-stack help` lists them). `--yes` takes the default for anything not given; secrets such as an encryption password come from environment variables, never options. `status`, `vaults` and `setup-uri` have `--json` output.
 
 The command always acts on the install it belongs to: the folder it lives in (following the link on the PATH), or one given with `--dir` or `$OBSIDIAN_STACK_DIR`. Every container the stack creates carries a Docker label with the install's `STACK_ID` from `.env`, and the command finds containers by that label rather than by name, so other Obsidian containers on the machine are never affected.
 
@@ -137,6 +140,20 @@ Enabling it asks whether to turn off Obsidian's restricted mode, which otherwise
 It's the heaviest part by far: 325–400 MB of RAM per vault while idle, against about 230 MB for the whole stack without it. Starting with 13 community plugins took about 870 MB before settling, and the browser tab adds more while open. The image is a 1.3 GB download and about 5 GB on disk. If Obsidian exits, including when its window is closed in the browser, it is reopened within about 30 seconds.
 
 Each vault gets its own app container rather than sharing one. Obsidian can open several vaults in one container, and the CLI can target each, but in testing it saved almost no memory (two vaults in one container used about 675 MB, the same as two containers), since most of the cost is per window. It also let one vault's plugins read the other vaults, and resizing the shared screen for one vault's screenshots left the other vault's window the wrong size.
+
+## Managing the stack from AI tools (optional)
+
+`obsidian-stack manager enable` lets AI tools connected to the MCP manage the install itself. Five `obsidian_stack_*` tools appear:
+
+| Tool | Does |
+|---|---|
+| `obsidian_stack_status` | The core containers and every vault: sync source and state, note count, Obsidian app |
+| `obsidian_stack_vaults` | Add a vault (self-hosted LiveSync, Official Sync, git or none), rename one, or remove one (its notes are kept) |
+| `obsidian_stack_sync` | Restart a vault's sync, or read its recent logs |
+| `obsidian_stack_app` | Turn the Obsidian app on or off for a vault |
+| `obsidian_stack_setup_uri` | A Setup URI and passphrase for a self-hosted LiveSync vault's devices |
+
+It's off by default because it needs Docker, which is root-equivalent on the server. It runs in its own container (`extras/manager`), separate from the MCP, and only performs those operations, each as an `obsidian-stack` command with checked arguments: no raw Docker, no uninstall or update, no deleting notes. Some things stay at the terminal: Official Sync vaults can only be added by reusing an account already signed in on the server, and joining an existing LiveSync server needs its Setup URI and passphrase. Setup URIs, passphrases and git deploy keys it creates are returned to the AI client, so they appear in that conversation. With the manager on, keep the MCP private or behind OAuth. The reasoning: [docs/decisions/001-mcp-stack-management.md](docs/decisions/001-mcp-stack-management.md).
 
 ## Running a second instance
 

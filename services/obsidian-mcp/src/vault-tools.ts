@@ -69,6 +69,23 @@ import {
   WriteNoteInput
 } from "./tools/notes.js";
 import { SEARCH_TOOL, SearchInput } from "./tools/search.js";
+import {
+  handleStackApp,
+  handleStackSetupUri,
+  handleStackStatus,
+  handleStackSync,
+  handleStackVaults,
+  STACK_APP_TOOL,
+  STACK_SETUP_URI_TOOL,
+  STACK_STATUS_TOOL,
+  STACK_SYNC_TOOL,
+  STACK_VAULTS_TOOL,
+  StackAppInput,
+  StackSetupUriInput,
+  StackStatusInput,
+  StackSyncInput,
+  StackVaultsInput
+} from "./tools/stack.js";
 import { handleSearchNotes, SEARCH_NOTES_TOOL, SearchNotesInput } from "./tools/search-notes.js";
 import { handleStatus, STATUS_TOOL, StatusInput } from "./tools/status.js";
 
@@ -216,6 +233,29 @@ export function obsidianTools(connections: VaultConnections): ToolRegistration[]
     {
       def: { ...APP_SCREENSHOT_TOOL, inputSchema: withVaultId(AppScreenshotInput), annotations: READ_ONLY },
       handler: async (i) => handleAppScreenshot(await connections.app(i.vault_id), i)
+    },
+
+    // The optional manager add-on: managing this install itself. Listed
+    // only when it's on (see server.ts).
+    {
+      def: { ...STACK_STATUS_TOOL, inputSchema: StackStatusInput, annotations: READ_ONLY },
+      handler: async () => handleStackStatus()
+    },
+    {
+      def: { ...STACK_VAULTS_TOOL, inputSchema: StackVaultsInput, annotations: { ...MUTATING, openWorldHint: true } },
+      handler: async (i) => handleStackVaults(i)
+    },
+    {
+      def: { ...STACK_SYNC_TOOL, inputSchema: StackSyncInput, annotations: MUTATING },
+      handler: async (i) => handleStackSync(i)
+    },
+    {
+      def: { ...STACK_APP_TOOL, inputSchema: StackAppInput, annotations: { ...MUTATING, openWorldHint: true } },
+      handler: async (i) => handleStackApp(i)
+    },
+    {
+      def: { ...STACK_SETUP_URI_TOOL, inputSchema: StackSetupUriInput, annotations: READ_ONLY },
+      handler: async (i) => handleStackSetupUri(i)
     },
 
     // Compatibility aliases retained for existing agents and automations.

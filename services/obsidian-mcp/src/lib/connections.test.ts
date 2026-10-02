@@ -42,10 +42,10 @@ function backend(t: test.TestContext) {
 test("one MCP inventory offers vault selection on every content tool", async (t) => {
   const { connections } = backend(t);
   const tools = obsidianTools(connections);
-  assert.equal(new Set(tools.map((tool) => tool.def.name)).size, 27);
+  assert.equal(new Set(tools.map((tool) => tool.def.name)).size, 32);
   assert.equal(tools.filter((tool) => tool.def.name === "obsidian_list_vaults").length, 1);
   for (const tool of tools) {
-    if (tool.def.name === "obsidian_list_vaults") continue;
+    if (tool.def.name === "obsidian_list_vaults" || tool.def.name.startsWith("obsidian_stack_")) continue;
     const schema = zodToJsonSchema(tool.def.inputSchema);
     assert.ok(schema.properties.vault_id, tool.def.name);
     // optional, so a single-vault server needs no lookup first
@@ -148,4 +148,32 @@ test("app tools reach only vaults with the Obsidian app add-on, at their own con
     /OBSIDIAN_APP_TOKEN/
   );
   assert.equal(calls.length, 1);
+});
+
+test("stack tools reach the manager with its token, and refuse when it's off", async (t) => {
+  const calls: { url: string; auth: string | null; body: any }[] = [];
+  t.mock.method(globalThis, "fetch", async (rawUrl: string, options: RequestInit) => {
+    calls.push({ url: rawUrl, auth: new Headers(options.headers).get("authorization"), body: JSON.parse(String(options.body)) });
+    return Response.json({ removed: "work" });
+  });
+  const tools = obsidianTools(new VaultConnections("http://synthetic.invalid", "synthetic"));
+  const vaults = tools.find((tool) => tool.def.name === "obsidian_stack_vaults")!;
+  const input = vaults.def.inputSchema.parse({ action: "remove", vault_id: "work" });
+
+  delete process.env.OBSIDIAN_MANAGER_TOKEN;
+  await assert.rejects(vaults.handler(input), /manager add-on is off/);
+  assert.equal(calls.length, 0);
+
+  process.env.OBSIDIAN_MANAGER_TOKEN = "mgr-secret";
+  process.env.OBSIDIAN_MANAGER_URL = "http://test-obsidian-manager:7320";
+  t.after(() => {
+    delete process.env.OBSIDIAN_MANAGER_TOKEN;
+    delete process.env.OBSIDIAN_MANAGER_URL;
+  });
+  await vaults.handler(input);
+  assert.deepEqual(calls, [
+    { url: "http://test-obsidian-manager:7320/vaults", auth: "Bearer mgr-secret", body: { action: "remove", vault_id: "work" } }
+  ]);
+  assert.equal(vaults.def.inputSchema.safeParse({ action: "remove", vault_id: "../etc" }).success, false);
+  assert.equal(vaults.def.inputSchema.safeParse({ action: "add", name: "X", source: "existing-livesync" }).success, false);
 });

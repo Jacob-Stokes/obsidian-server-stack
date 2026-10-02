@@ -66,6 +66,13 @@ opening Settings (`"cli": true` in `obsidian.json`) was documented by
 [obsidianless](https://github.com/lucastraba/obsidianless) (MIT); no code
 from that project is used.
 
+## extras/manager/
+
+Original Dockerfile, compose file and `manager.py`. The image is built from
+the official [`docker:cli`](https://hub.docker.com/_/docker) image
+([source](https://github.com/docker-library/docker), Apache-2.0), adding
+Alpine packages (`bash`, Python and command-line tools) at build time.
+
 ## Everything else
 
 `services/obsidian-mcp`, `services/obsidian-api`, `obsidian-stack` and `install.sh` are

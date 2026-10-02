@@ -9,6 +9,7 @@ import { startMcp } from "./lib/transport.js";
 import { VaultConnections } from "./lib/connections.js";
 import { ObsidianError } from "./obsidian-client.js";
 import { APP_TOOLS, obsidianTools } from "./vault-tools.js";
+import { managerConfigured, STACK_TOOLS } from "./tools/stack.js";
 
 const PORT = parseInt(process.env.PORT || "7002", 10);
 const OBSIDIAN_BASE_URL = process.env.OBSIDIAN_BASE_URL || "http://obsidian-api:3000";
@@ -77,23 +78,29 @@ await startMcp({
     try {
       const vaults = await connections.list();
       const apps = vaults.filter((v) => v.app).map((v) => v.id);
+      const managerNote = managerConfigured()
+        ? " The obsidian_stack_* tools manage this server itself (add, rename and remove vaults, restart sync, turn the Obsidian app on or off); use them when asked to, and treat the Setup URIs and keys they return as secrets."
+        : "";
       const appNote = apps.length
         ? ` The Obsidian app also runs on the server for ${apps.join(", ")}: the obsidian_app_* tools reach its commands, community plugins, themes, CSS snippets and Bases, check link health and take screenshots.`
         : "";
       if (vaults.length === 1) {
         const [v] = vaults;
-        return `Server-side Obsidian vault. This server has one vault, "${v.name}" (id: ${v.id}); vault_id can be omitted from every tool.${appNote} ${general}`;
+        return `Server-side Obsidian vault. This server has one vault, "${v.name}" (id: ${v.id}); vault_id can be omitted from every tool.${appNote}${managerNote} ${general}`;
       }
-      return `Server-side Obsidian vaults. This server has ${vaults.length} vaults: call obsidian_list_vaults, then pass vault_id to every other tool.${appNote} ${general}`;
+      return `Server-side Obsidian vaults. This server has ${vaults.length} vaults: call obsidian_list_vaults, then pass vault_id to every other tool.${appNote}${managerNote} ${general}`;
     } catch {
       return `Server-side Obsidian vaults. Call obsidian_list_vaults, then pass vault_id to the other tools (it can be omitted when there is only one vault). ${general}`;
     }
   },
   tools: obsidianTools(connections),
   // The app tools only appear when some vault has the add-on on.
+  // The manager's tools only when the manager add-on is on.
   listTools: async () => {
     const anyApp = await connections.list().then((vs) => vs.some((v) => v.app), () => false);
-    return (toolName) => anyApp || !APP_TOOLS.has(toolName);
+    const manager = managerConfigured();
+    return (toolName) =>
+      (anyApp || !APP_TOOLS.has(toolName)) && (manager || !STACK_TOOLS.includes(toolName));
   },
   onBackendError: (e) => {
     if (e instanceof ObsidianError) {
