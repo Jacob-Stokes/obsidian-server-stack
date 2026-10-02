@@ -574,6 +574,19 @@ EOF
   # is set up.
   reg add "$id" "$src" "$name"
   ok "added vault '$name' (id: $id) — files in vaults/$id/"
+
+  local app
+  cat <<'EOF'
+
+  Optional: run the full Obsidian app for this vault on this server.
+  Everything so far works on plain files. The app adds what only Obsidian
+  can do: AI tools can run community plugins (Templater, Linter, ...), query
+  Bases, check for broken links and take screenshots of notes, and the vault
+  can be opened in a browser tab. It costs about 350 MB of RAM and a 1.3 GB
+  download. See "Obsidian app (optional)" in README.md for more.
+EOF
+  ask "  Add the Obsidian app for this vault? (later: $ME app enable $id) [y/N] " app
+  case "$app" in [yY]*) app_enable "$id" ;; esac
 }
 
 remove_vault() {
@@ -1123,7 +1136,7 @@ cmd_menu() {
     vault_rows
     echo
     echo "  a) add   r) remove   s) status   l) logs   R) restart   e) endpoint"
-    echo "  U) setup URI   u) update   q) quit"
+    echo "  o) Obsidian app   U) setup URI   u) update   q) quit"
     ask "  > " choice
     case "${choice:-q}" in
       a) add_vault ;;
@@ -1132,6 +1145,10 @@ cmd_menu() {
       l) ask "  Logs for (vault id, api, mcp, couchdb): " target; [ -n "$target" ] && { cmd_logs "$target" || true; } ;;
       R) ask "  Restart (vault id, api, mcp, couchdb, all): " target; [ -n "$target" ] && { cmd_restart "$target" || true; } ;;
       e) cmd_endpoint ;;
+      o) cmd_app status; echo; ask "  Enable or disable the app for (vault id, blank to skip): " target
+         if [ -n "$target" ]; then
+           if app_on "$target"; then ( app_disable "$target" ) || true; else ( app_enable "$target" ) || true; fi
+         fi ;;
       U) ask "  Setup URI for (vault id): " target; [ -n "$target" ] && { ( cmd_setup_uri "$target" ) || true; } ;;
       u) cmd_update; return ;;
       *) break ;;
