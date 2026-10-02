@@ -26,6 +26,16 @@ cd obsidian-server-stack
 
 Requires Linux with Docker (Compose v2), `openssl` and `curl`, plus `ssh-keygen` for git sync. Run as root or with sudo.
 
+It's light: a test install with three vaults (two on self-hosted LiveSync, one on Official Sync) idles at about 230 MB of RAM and next to no CPU. Measured per part:
+
+| Part | RAM (idle) | Disk |
+|---|---|---|
+| API + MCP | ~50 MB | ~0.6 GB of images |
+| CouchDB, shared by self-hosted LiveSync vaults | ~75 MB | ~0.5 GB, plus the databases |
+| Each self-hosted or existing LiveSync vault | 25–60 MB | ~0.4 GB image, shared |
+| Each Official Sync vault | ~25 MB | ~0.3 GB image, shared |
+| [Obsidian app](#obsidian-app-optional), optional, per vault | 325–400 MB, more with many plugins or the browser tab open | ~5 GB image (1.3 GB download), shared, plus ~0.4 GB per vault |
+
 The installer generates secrets, starts the core containers, adds a first vault, and offers to put an `obsidian-stack` command on the PATH for managing the install afterwards. Once finished, the MCP endpoint is at `http://localhost:7002/mcp`, with its bearer token in `.env`.
 
 ## How it works
@@ -114,7 +124,7 @@ Everything above works on plain markdown files, with no Obsidian app on the serv
 
 Enabling it asks whether to turn off Obsidian's restricted mode, which otherwise keeps community plugins from running. Plugins are code from their authors, and with restricted mode off they run on the server with access to the vault. Two settings in `state/<id>/app.env` limit what the MCP may do: `APP_COMMANDS` lists the commands it may run (for example `obsidian-linter:*,editor:*`), and `APP_EXTENSIONS=read` lets it see plugins, themes and snippets but not change them. Arbitrary JavaScript (`eval`) is never exposed. `obsidian-stack app run <id> <command>` runs any Obsidian CLI command directly, e.g. `plugins:restrict off`.
 
-It costs about 350 MB of RAM per vault while idle, more while the browser tab is open, plus a 1.3 GB image. If Obsidian exits, including when its window is closed in the browser, it is reopened within about 30 seconds.
+It's the heaviest part by far: 325–400 MB of RAM per vault while idle, against about 230 MB for the whole stack without it. Starting with 13 community plugins took about 870 MB before settling, and the browser tab adds more while open. The image is a 1.3 GB download and about 5 GB on disk. If Obsidian exits, including when its window is closed in the browser, it is reopened within about 30 seconds.
 
 ## Running a second instance
 
