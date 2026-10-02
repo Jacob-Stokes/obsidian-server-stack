@@ -8,7 +8,7 @@
 #
 # Version: devices update the LiveSync plugin on their own, and a newer
 # plugin can upgrade a vault's database to a format an older client can't
-# read (found the hard way: plugin 1.0.34 vs a 1.0.21 client). LiveSync
+# read (found the hard way: plugin 1.0.33 vs a 1.0.21 client). LiveSync
 # publishes CLI images less often than plugin releases, so the client is
 # built here from the release's own source and Dockerfile instead, at the
 # same version as the Setup URI generator in obsidian-stack. Renovate keeps
@@ -26,9 +26,9 @@ services:
     # The LiveSync client built from the same LiveSync release devices run
     # (see the header). renovate: datasource=github-releases depName=vrtmrz/obsidian-livesync
     build:
-      context: https://github.com/vrtmrz/obsidian-livesync.git#1.0.34
+      context: https://github.com/vrtmrz/obsidian-livesync.git#1.0.33
       dockerfile: src/apps/cli/Dockerfile
-    image: ${INSTANCE_PREFIX:-}obsidian-livesync-client:1.0.34
+    image: ${INSTANCE_PREFIX:-}obsidian-livesync-client:1.0.33
     container_name: ${INSTANCE_PREFIX:-}obsidian-${VAULT_ID:?}-livesync-init
     labels:
       obsidian-server-stack.id: ${STACK_ID:?Set STACK_ID in .env}
@@ -45,9 +45,9 @@ services:
     # The LiveSync client built from the same LiveSync release devices run
     # (see the header). renovate: datasource=github-releases depName=vrtmrz/obsidian-livesync
     build:
-      context: https://github.com/vrtmrz/obsidian-livesync.git#1.0.34
+      context: https://github.com/vrtmrz/obsidian-livesync.git#1.0.33
       dockerfile: src/apps/cli/Dockerfile
-    image: ${INSTANCE_PREFIX:-}obsidian-livesync-client:1.0.34
+    image: ${INSTANCE_PREFIX:-}obsidian-livesync-client:1.0.33
     container_name: ${INSTANCE_PREFIX:-}obsidian-${VAULT_ID:?}-livesync
     labels:
       obsidian-server-stack.id: ${STACK_ID:?Set STACK_ID in .env}

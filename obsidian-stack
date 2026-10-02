@@ -454,8 +454,8 @@ setup_none() {
 # client in sync/livesync/docker-compose.yml is built from, so the settings
 # it hands out are ones the client supports. Renovate moves both together.
 # renovate: datasource=github-tags depName=vrtmrz/obsidian-livesync
-LIVESYNC_VERSION=1.0.34
-GEN_URL=https://raw.githubusercontent.com/vrtmrz/obsidian-livesync/27a2d9e8c9672fb8df522470712da3cc6e35af11/utils/flyio/generate_setupuri.ts
+LIVESYNC_VERSION=1.0.33
+GEN_URL=https://raw.githubusercontent.com/vrtmrz/obsidian-livesync/0f6e32dc1b42e85b9d8884d54742706c88036a37/utils/flyio/generate_setupuri.ts
 GEN_IMAGE=denoland/deno:2.4.5
 
 # gen_uri ID HOSTNAME — runs the generator; sets URI, URI_PASS and RECOVERY
