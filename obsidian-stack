@@ -25,7 +25,7 @@ else
   TTY="" C_ACC="" C_B="" C_DIM="" C_0="" C_OK="" C_WARN="" C_ERR=""
 fi
 case "$(locale charmap 2>/dev/null)" in UTF-8) SPIN=(⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏) ;; *) SPIN=('|' '/' '-' '\') ;; esac
-[ -n "$TTY" ] && trap 'printf "\033[?25h"' EXIT
+[ -n "$TTY" ] && trap 'anim_stop; printf "\033[?25h"' EXIT
 
 say()  { printf '\n%s◆%s %s%s%s\n' "$C_ACC" "$C_0" "$C_B" "$1" "$C_0"; }
 ok()   { printf '  %s✓%s %s\n' "$C_OK" "$C_0" "$1"; }
@@ -60,7 +60,9 @@ ask() {
     printf '  %s?%s %s%s(default)%s\n' "$C_ACC" "$C_0" "$q" "$C_DIM" "$C_0" >&2
     return 0
   fi
+  anim_on
   read -rp "  ${C_ACC}?${C_0} ${q}" "$2" || printf -v "$2" '%s' ""
+  anim_off
 }
 # ask_secret "Question" VAR [ENV] — hidden input; with ENV, taken from that
 # environment variable instead (secrets never go in options, which show up
@@ -76,7 +78,9 @@ ask_secret() {
     printf -v "$2" '%s' ""
     return 0
   fi
+  anim_on
   read -rsp "  ${C_ACC}?${C_0} ${q}" "$2" || printf -v "$2" '%s' ""
+  anim_off
   echo
 }
 # need KEY "what" — a value that has no default, when not asking
@@ -98,6 +102,7 @@ step() {
     printf '  … %s\n' "$label"
     "$@" >> "$LOG" 2>&1 </dev/null || rc=$?
   else
+    anim_on
     "$@" >> "$LOG" 2>&1 </dev/null &
     pid=$!
     printf '\033[?25l'
@@ -112,6 +117,7 @@ step() {
       sleep 0.12
     done
     wait "$pid" || rc=$?
+    anim_off
     printf '\r\033[K\033[?25h'
   fi
   if [ "$rc" -eq 0 ]; then
@@ -136,6 +142,7 @@ pull() {
     step "Downloading $label" docker pull "$image"; return
   fi
   case "$(uname -m)" in x86_64) arch=amd64 ;; aarch64|arm64) arch=arm64 ;; *) arch="" ;; esac
+  anim_on
   printf '  %s%s%s Downloading %s  %schecking size…%s' "$C_ACC" "${SPIN[0]}" "$C_0" "$label" "$C_DIM" "$C_0"
   if [ -n "$arch" ]; then
     total="$(timeout 20 docker manifest inspect -v "$image" 2>/dev/null | awk -v a="\"architecture\": \"$arch\"" '
@@ -168,6 +175,7 @@ pull() {
         if (++lines % 5 == 0) draw()
       }
       END { draw(); printf "\r\033[K" > "/dev/stderr"; fflush("/dev/stderr"); if (err != "") { print err > "/dev/stderr"; exit 1 } }' || rc=$?
+  anim_off
   printf '\033[?25h'
   if [ "$rc" -eq 0 ] && docker image inspect "$image" >/dev/null 2>&1; then
     ok "Downloaded $label ${C_DIM}($(awk -v b="${total:-0}" 'BEGIN { if (b > 0) printf "%.1f GB, ", b / 1e9 }')$(elapsed $((SECONDS - start))))${C_0}"
@@ -183,19 +191,78 @@ AWK_LIVE=""; awk -W version 2>/dev/null | grep -qi mawk && AWK_LIVE="-W interact
 # The logo: a two-tone diamond with sync arrows, as in the README.
 banner() {
   [ -n "$TTY" ] || { printf '\nobsidian-server-stack\n'; return; }
-  local L1=$'\033[38;5;141m' R1=$'\033[38;5;135m' L2=$'\033[38;5;98m' R2=$'\033[38;5;56m'
-  local W1=$'\033[1;97;48;5;141m' X1=$'\033[1;97;48;5;135m' W2=$'\033[1;97;48;5;98m' X2=$'\033[1;97;48;5;56m'
-  local t="$C_B" d="$C_DIM" o="$C_0"
+  BN_L1=$'\033[38;5;141m' BN_R1=$'\033[38;5;135m' BN_L2=$'\033[38;5;98m' BN_R2=$'\033[38;5;56m'
+  BN_W1=$'\033[1;97;48;5;141m' BN_X1=$'\033[1;97;48;5;135m' BN_W2=$'\033[1;97;48;5;98m' BN_X2=$'\033[1;97;48;5;56m'
+  local L1="$BN_L1" R1="$BN_R1" L2="$BN_L2" R2="$BN_R2" o="$C_0"
+  # Interactive: start on a clean screen (the old contents scrolled into the
+  # scrollback, not erased), so the banner sits at the top and its sync
+  # arrows can spin there (anim_on).
+  if [ -z "$NONINTERACTIVE" ]; then
+    local rows; rows=$(stty size </dev/tty 2>/dev/null | cut -d' ' -f1)
+    if [[ "$rows" =~ ^[0-9]+$ ]]; then
+      printf '%*s' "$rows" '' | tr ' ' '\n'; printf '\033[H\033[J'; ANIM=1
+    fi
+  fi
   printf '\n'
   printf '            %s▟%s▙%s\n'                         "$L1" "$R1" "$o"
   printf '           %s▟█%s█▙%s\n'                        "$L1" "$R1" "$o"
   printf '          %s▟██%s██▙%s\n'                       "$L1" "$R1" "$o"
-  printf '         %s▟█%s╭─%s→╮%s█▙%s     %sobsidian-server-stack%s\n' "$L1" "$W1" "$X1" "$R1" "$o" "$t" "$o"
-  printf '        %s███%s↑ %s ↓%s███%s    %sObsidian vaults on a server,%s\n' "$L2" "$W2" "$X2" "$R2" "$o" "$d" "$o"
-  printf '         %s▜█%s╰←%s─╯%s█▛%s     %ssynced and reachable over MCP%s\n' "$L2" "$W2" "$X2" "$R2" "$o" "$d" "$o"
+  banner_loop 1 2 4 5
   printf '          %s▜██%s██▛%s\n'                       "$L2" "$R2" "$o"
   printf '           %s▜█%s█▛%s\n'                        "$L2" "$R2" "$o"
   printf '            %s▜%s▛%s\n'                         "$L2" "$R2" "$o"
+}
+
+# The banner's middle three rows (screen rows 5-7): the sync loop in the
+# diamond, with arrows on the given cells (0-5, clockwise from the top left;
+# corners excluded) and plain line elsewhere.
+banner_loop() {
+  local c=(─ ─ │ ─ ─ │) a=(→ → ↓ ← ← ↑) i o="$C_0"
+  for i in "$@"; do c[i]="${a[i]}"; done
+  printf '         %s▟█%s╭%s%s%s╮%s█▙%s     %sobsidian-server-stack%s\n' "$BN_L1" "$BN_W1" "${c[0]}" "$BN_X1" "${c[1]}" "$BN_R1" "$o" "$C_B" "$o"
+  printf '        %s███%s%s %s %s%s███%s    %sObsidian vaults on a server,%s\n' "$BN_L2" "$BN_W2" "${c[5]}" "$BN_X2" "${c[2]}" "$BN_R2" "$o" "$C_DIM" "$o"
+  printf '         %s▜█%s╰%s%s%s╯%s█▛%s     %ssynced and reachable over MCP%s\n' "$BN_L2" "$BN_W2" "${c[4]}" "$BN_X2" "${c[3]}" "$BN_R2" "$o" "$C_DIM" "$o"
+}
+
+# The banner's arrows spin while the installer waits (a question, a step, a
+# download), for as long as the banner is on screen: before each wait the
+# terminal reports the cursor's row, and once output has reached the bottom
+# (the next line scrolls the banner) they stop for good. Frames are drawn at
+# the banner's fixed rows, saving and restoring the cursor, straight to the
+# terminal (prompts can run inside $(...)).
+ANIM="" ANIM_PID=""
+anim_on() {
+  [ -n "$ANIM" ] && [ -z "$ANIM_PID" ] || return 0
+  local rows row _ tty
+  rows=$(stty size </dev/tty 2>/dev/null | cut -d' ' -f1)
+  # echo off first: the reply can arrive before read starts, and would show
+  tty=$(stty -g </dev/tty 2>/dev/null) && stty -echo </dev/tty 2>/dev/null
+  printf '\033[6n' >/dev/tty
+  IFS='[;' read -rs -d R -t 0.5 _ row _ </dev/tty 2>/dev/null
+  [ -n "$tty" ] && stty "$tty" </dev/tty 2>/dev/null
+  if ! [[ "$rows" =~ ^[0-9]+$ && "$row" =~ ^[0-9]+$ ]] || [ "$row" -ge "$rows" ]; then
+    ANIM=""; return 0
+  fi
+  (
+    trap 'exit 0' TERM
+    while :; do
+      for k in 0 1 2; do
+        printf '\x1b7\033[5;1H%s\x1b8' "$(banner_loop "$k" $((k + 3)))" >/dev/tty
+        sleep 0.15
+      done
+    done
+  ) &
+  ANIM_PID=$!
+}
+# Stop spinning, back on the logo (the banner hasn't moved: anim_on checked).
+anim_off() {
+  [ -n "$ANIM_PID" ] || return 0
+  anim_stop
+  printf '\x1b7\033[5;1H%s\x1b8' "$(banner_loop 1 2 4 5)" >/dev/tty
+}
+anim_stop() {
+  [ -n "$ANIM_PID" ] || return 0
+  kill "$ANIM_PID" 2>/dev/null; wait "$ANIM_PID" 2>/dev/null; ANIM_PID=""
 }
 
 usage() {
