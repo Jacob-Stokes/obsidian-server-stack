@@ -8,7 +8,7 @@
 #
 # Version: devices update the LiveSync plugin on their own, and a newer
 # plugin can upgrade a vault's database to a format an older client can't
-# read (found the hard way: plugin 1.0.34 vs a 1.0.21 client). LiveSync
+# read (found the hard way, with the server's client ten releases behind). LiveSync
 # publishes CLI images less often than plugin releases, so the client is
 # built here from the release's own source and Dockerfile instead, at the
 # same version as the Setup URI generator in obsidian-stack. Renovate keeps
