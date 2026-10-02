@@ -71,4 +71,34 @@ case "${SYNC_CONFIGS:-}" in
 esac
 
 echo "Starting continuous sync for '${VAULT_NAME}'..."
-exec ob sync --continuous --path /vault
+case "${SYNC_CONFIGS:-}" in
+  ""|none) exec ob sync --continuous --path /vault ;;
+esac
+
+# With settings sync on: ob's live watcher picks up note changes but not
+# changes under .obsidian, which it only uploads on the full scan it does when
+# it connects (found by testing: a plugin installed on the server only went
+# up after a restart). So run it as a child, check for changed settings files
+# every 5s, and once they've stopped changing (a plugin install writes several
+# files), restart it so they upload. workspace*.json is open tabs, which
+# Obsidian Sync doesn't sync anyway.
+marker=/tmp/.settings-scanned
+touch "$marker"
+changed() { [ -n "$(find /vault/.obsidian -type f -newer "$1" ! -name 'workspace*.json' 2>/dev/null | head -n 1)" ]; }
+trap 'kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null; exit 0' TERM INT
+while :; do
+  ob sync --continuous --path /vault &
+  pid=$!
+  while sleep 5; do
+    kill -0 "$pid" 2>/dev/null || { wait "$pid"; exit $?; }  # ob stopped by itself: let Docker restart us
+    changed "$marker" || continue
+    # changed since the last scan; wait until a 5s round passes with no writes
+    touch /tmp/.settings-quiet
+    sleep 5
+    changed /tmp/.settings-quiet && continue
+    touch "$marker"
+    echo "Settings changed on this server; reconnecting so they upload..."
+    kill "$pid"; wait "$pid" 2>/dev/null
+    break
+  done
+done
