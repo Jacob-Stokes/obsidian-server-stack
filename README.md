@@ -107,6 +107,7 @@ To give CouchDB an HTTPS address, `sync/couchdb` has optional profiles for [Tail
 | `obsidian-stack update` | `git pull`, rebuild, and restart everything on the new version |
 | `obsidian-stack endpoint [--show-token]` | MCP URL and bearer token |
 | `obsidian-stack link [name]` | Add the command to `/usr/local/bin` |
+| `obsidian-stack licenses [--full]` | Licences of the stack and of everything it uses; `--full` shows the full texts |
 | `obsidian-stack uninstall [--yes]` | Remove the install's containers, images and command; notes are kept unless chosen |
 
 The command always acts on the install it belongs to: the folder it lives in (following the link on the PATH), or one given with `--dir` or `$OBSIDIAN_STACK_DIR`. Every container the stack creates carries a Docker label with the install's `STACK_ID` from `.env`, and the command finds containers by that label rather than by name, so other Obsidian containers on the machine are never affected.

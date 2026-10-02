@@ -422,6 +422,14 @@ def bases(body):
     if action == "query":
         wait_for_index()
         rows = json.loads(run("base:query", f"path={path}", *view_arg, "format=json") or "[]")
+        # Seen once on a brand-new install: the first query returned no rows
+        # while Obsidian was still taking in the vault's synced settings
+        # (property types); asked again, it returned 22. Retry empty results.
+        for _ in range(2):
+            if rows:
+                break
+            time.sleep(2)
+            rows = json.loads(run("base:query", f"path={path}", *view_arg, "format=json") or "[]")
         limit = limit_of(body)
         return {"path": path, "view": view, "total": len(rows), "rows": rows[:limit], "truncated": len(rows) > limit}
     if action == "create_item":

@@ -186,6 +186,7 @@ Usage: obsidian-stack [--dir PATH] [command]
                       notes are kept unless asked (--yes: no prompts, keep data)
   endpoint [--show-token]
                       MCP URL and bearer token
+  licenses [--full]   licences of the stack and what it uses (--full: texts)
   link [NAME]         put this install's obsidian-stack on PATH
                       (/usr/local/bin/NAME, default obsidian-stack)
 
@@ -1271,6 +1272,37 @@ cmd_uninstall() {
   say "Uninstalled"
 }
 
+# Licences of this stack and of everything it builds on. The details, and
+# the reasoning for each, are in THIRD_PARTY_NOTICES.md.
+cmd_licenses() {
+  if [ "${1:-}" = "--full" ]; then
+    local pager="cat"; [ -n "$TTY" ] && command -v less >/dev/null 2>&1 && pager="less -R"
+    { printf '%s\n\n' "THIRD-PARTY NOTICES${TTY:+  (q to quit)}"; cat THIRD_PARTY_NOTICES.md
+      printf '\n\n%s\n\n' "LICENSE (obsidian-server-stack)"; cat LICENSE; } | $pager
+    return
+  fi
+  say "Licences"
+  info "This stack is MIT licensed (LICENSE). What it builds on:"
+  echo
+  lic() { printf '  %-38s %-33s %s%s%s\n' "$1" "$2" "$C_DIM" "$3" "$C_0"; }
+  printf '  %s%-38s %-33s %s%s\n' "$C_DIM" "Component" "Licence" "How it's used" "$C_0"
+  lic "obsidian-server-stack (this repo)" "MIT" "the API, MCP, CLI and setup"
+  lic "Self-hosted LiveSync" "MIT" "CouchDB setup adapted; CLI image pulled"
+  lic "Apache CouchDB" "Apache-2.0" "image pulled (self-hosted LiveSync)"
+  lic "Deno" "MIT" "image pulled to make Setup URIs"
+  lic "obsidian-headless (Obsidian Sync)" "Proprietary, Dynalist Inc." "installed from npm; not included"
+  lic "LinuxServer.io Obsidian image" "GPL-3.0" "pulled (optional Obsidian app)"
+  lic "Obsidian desktop app" "Proprietary, Dynalist Inc." "inside that image; not included"
+  lic "Caddy / Tailscale / cloudflared" "Apache-2.0 / BSD-3 / Apache-2.0" "optional HTTPS for CouchDB"
+  lic "git, OpenSSH (Alpine packages)" "GPL-2.0 / BSD" "installed in the git-sync image"
+  lic "@modelcontextprotocol/sdk, zod, jose" "MIT" "npm, in the MCP image"
+  lic "yaml" "ISC" "npm, in the MCP image"
+  lic "hono, @hono/node-server" "MIT" "npm, in the API image"
+  echo
+  info "Obsidian and Obsidian Sync are Dynalist Inc.'s; use is under Obsidian's own terms."
+  info "Full texts and details: $ME licenses --full   (or THIRD_PARTY_NOTICES.md)"
+}
+
 cmd_endpoint() {
   require_installed
   say "MCP endpoint"
@@ -1292,7 +1324,7 @@ cmd_menu() {
     vault_rows
     local k="$C_ACC" z="$C_0"
     printf '\n  %sa%s add   %sr%s remove   %ss%s status   %sl%s logs   %sR%s restart   %se%s endpoint\n' "$k" "$z" "$k" "$z" "$k" "$z" "$k" "$z" "$k" "$z" "$k" "$z"
-    printf '  %so%s Obsidian app   %sU%s setup URI   %su%s update   %sq%s quit\n\n' "$k" "$z" "$k" "$z" "$k" "$z" "$k" "$z"
+    printf '  %so%s Obsidian app   %sU%s setup URI   %sL%s licences   %su%s update   %sq%s quit\n\n' "$k" "$z" "$k" "$z" "$k" "$z" "$k" "$z" "$k" "$z"
     ask "Choose: " choice
     case "$choice" in
       a) add_vault ;;
@@ -1306,6 +1338,7 @@ cmd_menu() {
            if app_on "$target"; then ( app_disable "$target" ) || true; else ( app_enable "$target" ) || true; fi
          fi ;;
       U) ask "Setup URI for (vault id): " target; [ -n "$target" ] && { ( cmd_setup_uri "$target" ) || true; } ;;
+      L) cmd_licenses ;;
       u) cmd_update; return ;;
       q|Q|"") break ;;
       *) warn "'$choice' isn't an option" ;;
@@ -1332,6 +1365,7 @@ case "$cmd" in
   uninstall) cmd_uninstall "$@" ;;
   endpoint) cmd_endpoint "$@" ;;
   setup-uri) cmd_setup_uri "$@" ;;
+  licenses|licences|license|licence|notices) cmd_licenses "$@" ;;
   app) cmd_app "$@" ;;
   link) cmd_link "$@" ;;
   help|-h|--help) usage ;;
