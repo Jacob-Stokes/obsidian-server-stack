@@ -152,11 +152,19 @@ export const AppScreenshotInput = z.object({
     .optional()
     .describe("Vault-relative file to open first (a note, canvas, .base, Kanban board...). Omit to capture whatever is open."),
   wait_ms: z.number().int().min(0).max(10_000).optional().describe("How long to let it render before capturing (default 1500)."),
+  width: z.number().int().min(320).max(3840).optional().describe("Layout width of the app window in CSS pixels (server default, normally 1600)."),
+  height: z.number().int().min(240).max(2400).optional().describe("Layout height in CSS pixels (server default, normally 1000)."),
+  scale: z
+    .number()
+    .min(1)
+    .max(3)
+    .optional()
+    .describe("Pixel density: 1 = standard, 2 = Retina (same layout, twice the sharpness; server default, normally 2). The image is width x scale by height x scale pixels."),
 });
 export const APP_SCREENSHOT_TOOL = {
   name: "obsidian_app_screenshot",
   description:
-    "A screenshot of the Obsidian app on the server, optionally after opening a file. Shows how Obsidian renders it: canvases, diagrams, Bases tables, plugin views such as Kanban, which can't be judged from the markdown alone. Returns a PNG image.",
+    "A screenshot of the Obsidian app on the server, optionally after opening a file. Shows how Obsidian renders it: canvases, diagrams, Bases tables, plugin views such as Kanban, which can't be judged from the markdown alone. Returns a PNG image. Size is set per call (width, height, scale) or by the server's default, normally 1600x1000 at 2x; a wider layout fits more, a higher scale is sharper.",
   inputSchema: AppScreenshotInput,
 };
 
@@ -193,7 +201,10 @@ export async function handleAppScreenshot(t: AppTarget, i: z.infer<typeof AppScr
   return {
     content: [
       { type: "image", data: shot.data, mimeType: shot.mimeType },
-      { type: "text", text: i.path ? `Obsidian showing ${i.path}` : "Obsidian as it is now" },
+      {
+        type: "text",
+        text: `${i.path ? `Obsidian showing ${i.path}` : "Obsidian as it is now"}, ${shot.width}x${shot.height} at ${shot.scale}x (${shot.pixels} pixels)`,
+      },
     ],
   };
 }

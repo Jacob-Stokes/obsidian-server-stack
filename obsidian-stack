@@ -695,6 +695,7 @@ EOF
   set_env "$f" APP_USER obsidian
   set_env "$f" APP_COMMANDS "*"
   set_env "$f" APP_EXTENSIONS manage
+  set_env "$f" APP_SCREENSHOT_SIZE "1600x1000@2"
   if [ -z "$(app_env "$id" APP_PASSWORD)" ]; then set_env "$f" APP_PASSWORD "$(openssl rand -hex 12)"; fi
   if [ -z "$(app_env "$id" APP_PORT)" ]; then
     port="$(next_app_port)"

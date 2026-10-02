@@ -42,6 +42,8 @@ services:
       APP_TOKEN: ${OBSIDIAN_APP_TOKEN:?}
       APP_COMMANDS: ${APP_COMMANDS:-*}
       APP_EXTENSIONS: ${APP_EXTENSIONS:-manage}
+      # Default screenshot size: layout width x height @ scale (2 = Retina).
+      APP_SCREENSHOT_SIZE: ${APP_SCREENSHOT_SIZE:-1600x1000@2}
     volumes:
       - ${VAULT_DIR:?}:/vault
       # Obsidian's own settings: which vault to open, CLI switched on.

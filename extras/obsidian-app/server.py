@@ -29,6 +29,7 @@ import sys
 import threading
 import time
 import uuid
+import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -430,14 +431,60 @@ def vault_health(body):
     return {"check": check, "total": len(items), "items": items[:limit], "truncated": len(items) > limit}
 
 
+def display(*args):
+    """wlr-randr against the app's desktop (labwc's output)."""
+    return subprocess.run(["wlr-randr", *args], env=ENV, capture_output=True, text=True, timeout=20)
+
+
+def screenshot_size(body):
+    """Layout size (width x height, in CSS pixels) and scale (2 = "Retina":
+    same layout, twice the pixels). Per call, else APP_SCREENSHOT_SIZE
+    ("1600x1000@2"), else 1600x1000 at 2x."""
+    default = re.match(r"^(\d+)x(\d+)(?:@([\d.]+))?$", os.environ.get("APP_SCREENSHOT_SIZE", "1600x1000@2"))
+    dw, dh, ds = (int(default[1]), int(default[2]), float(default[3] or 1)) if default else (1600, 1000, 2.0)
+    width, height, scale = int(body.get("width", dw)), int(body.get("height", dh)), float(body.get("scale", ds))
+    if not (320 <= width <= 3840 and 240 <= height <= 2400 and 1 <= scale <= 3):
+        raise ValueError("width 320-3840, height 240-2400 and scale 1-3")
+    if width * scale > 7680 or height * scale > 4800:
+        raise ValueError("width x scale must be at most 7680 and height x scale at most 4800 pixels")
+    return width, height, scale
+
+
 def screenshot(body):
-    if body.get("path") is not None:
-        run("open", f"path={vault_path(body)}")
-    # give the note (and any plugin views, e.g. Kanban, a Base table) time to render
-    time.sleep(max(0, min(int(body.get("wait_ms", 1500)), 10_000)) / 1000)
+    width, height, scale = screenshot_size(body)
+    path = vault_path(body) if body.get("path") is not None else None
+
+    # The desktop is a virtual display sized by whoever last viewed it in a
+    # browser (1024x768 when nobody has). Set it for this capture, and put it
+    # back afterwards so a browser viewer isn't left with a changed screen.
+    state = json.loads(display("--json").stdout or "[]")
+    output = state[0] if state else None
+    previous = None
+    if output:
+        mode = next((m for m in output["modes"] if m.get("current")), None)
+        previous = (mode["width"], mode["height"], output.get("scale", 1)) if mode else None
+        pixels = f"{round(width * scale)}x{round(height * scale)}"
+        changed = display("--output", output["name"], "--custom-mode", pixels, "--scale", str(scale))
+        if changed.returncode != 0:
+            raise RuntimeError(f"Couldn't set the display to {pixels}: {changed.stderr.strip()}")
+        time.sleep(1)  # let Obsidian re-lay itself out
     shot = f"/tmp/oss-shot-{uuid.uuid4().hex}.png"
     try:
+        if path:
+            run("open", f"path={path}")
+        # time for the note (and plugin views, e.g. Kanban, a Base) to render
+        time.sleep(max(0, min(int(body.get("wait_ms", 1500)), 10_000)) / 1000)
         run("dev:screenshot", f"path={shot}")
+        # The CLI returns before the PNG is written; bigger images take longer.
+        size = -1
+        for _ in range(100):
+            time.sleep(0.2)
+            now = os.path.getsize(shot) if os.path.exists(shot) else -1
+            if now > 0 and now == size:
+                break
+            size = now
+        else:
+            raise RuntimeError("Obsidian didn't finish writing the screenshot.")
         with open(shot, "rb") as f:
             data = f.read()
     finally:
@@ -445,7 +492,13 @@ def screenshot(body):
             os.remove(shot)
         except OSError:
             pass
-    return {"path": body.get("path"), "mimeType": "image/png", "data": base64.b64encode(data).decode()}
+        if output and previous:
+            display("--output", output["name"], "--custom-mode", f"{previous[0]}x{previous[1]}", "--scale", str(previous[2]))
+    return {
+        "path": path, "width": width, "height": height, "scale": scale,
+        "pixels": f"{round(width * scale)}x{round(height * scale)}",
+        "mimeType": "image/png", "data": base64.b64encode(data).decode(),
+    }
 
 
 def handle(route, body):
@@ -524,8 +577,10 @@ class Handler(BaseHTTPRequestHandler):
             self.reply(503, {"error": str(e)})
         except subprocess.TimeoutExpired:
             self.reply(504, {"error": "The Obsidian CLI timed out."})
+        except urllib.error.URLError as e:
+            self.reply(502, {"error": f"Couldn't reach Obsidian's community directory: {e.reason}"})
         except OSError as e:
-            self.reply(502, {"error": f"Couldn't reach Obsidian's community directory or files: {e}"})
+            self.reply(500, {"error": f"File error: {e}"})
         except Exception as e:  # noqa: BLE001 — always answer, never drop the connection
             sys.stderr.write(f"unexpected error on {self.path}: {e!r}\n")
             self.reply(500, {"error": f"Unexpected error: {e}"})
