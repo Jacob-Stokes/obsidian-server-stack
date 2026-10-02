@@ -1544,8 +1544,10 @@ cmd_update() {
     warn "Not a git checkout, so nothing to pull; rebuilding what's here"
   fi
   # Re-running install rebuilds the images, recreates the core and brings
-  # every vault's sync up on the new version. Skip its menu.
-  OBSIDIAN_STACK_NO_MENU=1 cmd_install
+  # every vault's sync up on the new version. It must be the *pulled*
+  # obsidian-stack that does it: this running copy has the old one's
+  # functions loaded (found when an update ran the previous release's steps).
+  OBSIDIAN_STACK_NO_MENU=1 exec "$ROOT/obsidian-stack" --dir "$ROOT" install ${NONINTERACTIVE:+--yes}
 }
 
 cmd_uninstall() {
