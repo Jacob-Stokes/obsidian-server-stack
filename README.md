@@ -26,6 +26,14 @@ cd obsidian-server-stack
 
 Requires Linux with Docker (Compose v2), `openssl` and `curl`, plus `ssh-keygen` for git sync. Run as root or with sudo.
 
+The installer generates secrets, starts the core containers, adds a first vault, and offers to put an `obsidian-stack` command on the PATH for managing the install afterwards. Once finished, the MCP endpoint is at `http://localhost:7002/mcp`, with its bearer token in `.env`.
+
+<p align="center">
+  <img src="assets/installer.gif" alt="obsidian-stack installing the stack and adding a self-hosted LiveSync vault, sped up" width="720">
+  <br>
+  <sub>A full install with one self-hosted LiveSync vault, sped up.</sub>
+</p>
+
 It's light: a test install with three vaults (two on self-hosted LiveSync, one on Official Sync) idles at about 230 MB of RAM and next to no CPU. Measured per part:
 
 | Part | RAM (idle) | Disk |
@@ -35,8 +43,6 @@ It's light: a test install with three vaults (two on self-hosted LiveSync, one o
 | Each self-hosted or existing LiveSync vault | 25–60 MB | ~0.4 GB image, shared |
 | Each Official Sync vault | ~25 MB | ~0.3 GB image, shared |
 | [Obsidian app](#obsidian-app-optional), optional, per vault | 325–400 MB, more with many plugins or the browser tab open | ~5 GB image (1.3 GB download), shared, plus ~0.4 GB per vault |
-
-The installer generates secrets, starts the core containers, adds a first vault, and offers to put an `obsidian-stack` command on the PATH for managing the install afterwards. Once finished, the MCP endpoint is at `http://localhost:7002/mcp`, with its bearer token in `.env`.
 
 ## How it works
 
@@ -85,12 +91,6 @@ This matters only for self-hosted LiveSync, the one source where devices connect
 To give CouchDB an HTTPS address, `sync/couchdb` has optional profiles for [Tailscale](https://tailscale.com) (an `https://<name>.<tailnet>.ts.net` address, private to the tailnet), [Caddy](https://caddyserver.com) (a domain with automatic certificates) and [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/) (a domain, no open ports); see [sync/couchdb](sync/couchdb/README.md). An existing reverse proxy pointed at port 5984 works too. The address devices use is asked for when the first self-hosted LiveSync vault is added and goes into each Setup URI; `obsidian-stack setup-uri <id> --url` changes it and prints a new URI.
 
 ## Managing
-
-<p align="center">
-  <img src="assets/installer.gif" alt="obsidian-stack installing the stack and adding a self-hosted LiveSync vault, sped up" width="720">
-  <br>
-  <sub>A full install with one self-hosted LiveSync vault, sped up.</sub>
-</p>
 
 `obsidian-stack` manages one install: adding and removing vaults, checking sync, reading logs. Run with no arguments, it opens an interactive menu.
 
