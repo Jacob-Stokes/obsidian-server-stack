@@ -36,18 +36,53 @@ die()  { printf '\n  %s✗ %s%s\n' "$C_ERR" "$1" "$C_0" >&2; exit 1; }
 # para: an explanation from a heredoc, set off by a blank line
 para() { echo; sed "s/^/  /"; }
 
-# ask "Question" VAR — "? Question"; end of input counts as an empty answer
-# rather than exiting under set -e. Leading spaces in the question are
-# ignored, so every prompt lines up the same.
+# Answers given as options (--name Work, --source livesync, ...), by key;
+# see parse_opts. With --yes, a question with no answer given takes its
+# default instead of being asked.
+declare -A PRESET=()
+NONINTERACTIVE=""
+JSON=""
+
+# ask "Question" VAR [KEY] — "? Question" (on stderr, like read -p, so it
+# never ends up in a $(...) capture); end of input counts as an empty
+# answer rather than exiting under set -e. Leading spaces in the question
+# are ignored, so every prompt lines up the same. With KEY, an answer given
+# as an option is used (and shown) instead of asking.
 ask() {
-  local q="${1#"${1%%[![:space:]]*}"}"
+  local q="${1#"${1%%[![:space:]]*}"}" key="${3:-}"
+  if [ -n "$key" ] && [ -n "${PRESET[$key]+set}" ]; then
+    printf -v "$2" '%s' "${PRESET[$key]}"
+    printf '  %s?%s %s%s%s%s\n' "$C_ACC" "$C_0" "$q" "$C_DIM" "${PRESET[$key]}" "$C_0" >&2
+    return 0
+  fi
+  if [ -n "$NONINTERACTIVE" ]; then
+    printf -v "$2" '%s' ""
+    printf '  %s?%s %s%s(default)%s\n' "$C_ACC" "$C_0" "$q" "$C_DIM" "$C_0" >&2
+    return 0
+  fi
   read -rp "  ${C_ACC}?${C_0} ${q}" "$2" || printf -v "$2" '%s' ""
 }
+# ask_secret "Question" VAR [ENV] — hidden input; with ENV, taken from that
+# environment variable instead (secrets never go in options, which show up
+# in process lists and shell history).
 ask_secret() {
-  local q="${1#"${1%%[![:space:]]*}"}"
+  local q="${1#"${1%%[![:space:]]*}"}" env="${3:-}"
+  if [ -n "$env" ] && [ -n "${!env+set}" ]; then
+    printf -v "$2" '%s' "${!env}"
+    printf '  %s?%s %s%s(from $%s)%s\n' "$C_ACC" "$C_0" "$q" "$C_DIM" "$env" "$C_0" >&2
+    return 0
+  fi
+  if [ -n "$NONINTERACTIVE" ]; then
+    printf -v "$2" '%s' ""
+    return 0
+  fi
   read -rsp "  ${C_ACC}?${C_0} ${q}" "$2" || printf -v "$2" '%s' ""
   echo
 }
+# need KEY "what" — a value that has no default, when not asking
+need() { [ -z "$NONINTERACTIVE" ] || [ -n "${PRESET[$1]:-}" ] || die "$2 is needed: --$1 <value>"; }
+# interactive_only "what" — a step that can't be done without a person
+interactive_only() { [ -z "$NONINTERACTIVE" ] || die "$1"; }
 
 elapsed() { local t="$1"; if [ "$t" -ge 60 ]; then printf '%dm %02ds' $((t / 60)) $((t % 60)); else printf '%ds' "$t"; fi; }
 
@@ -171,7 +206,8 @@ Usage: obsidian-stack [--dir PATH] [command]
   install             first-time setup, or re-run to repair/rebuild
   status              core containers and each vault's sync
   vaults              list vaults
-  add                 add a vault
+  add                 add a vault (scripted: see "Without questions" below)
+  rename ID NAME      change a vault's display name (its id stays)
   remove [ID]         remove a vault (its files are kept)
   setup-uri [ID] [--url]
                       Setup URI for a self-hosted LiveSync vault's devices
@@ -192,6 +228,17 @@ Usage: obsidian-stack [--dir PATH] [command]
 
 The install it acts on: --dir, else $OBSIDIAN_STACK_DIR, else the folder
 this script lives in.
+
+Without questions: --yes answers every question with its default, and
+these options answer specific ones:
+  --name NAME  --source livesync|existing-livesync|official|git|none
+  --device-url URL  --git-repo URL  --official-vault NAME  --reuse-login yes|no
+  --app yes|no  --app-port N  --plugins yes|no (restricted mode off)
+  --settings-sync yes|no  --plugin-changes yes|no
+Secrets come from the environment, never options: OBSIDIAN_VAULT_PASSWORD,
+LIVESYNC_SETUP_URI, LIVESYNC_SETUP_PASSPHRASE.
+--json: machine-readable output from status, vaults and setup-uri.
+e.g. obsidian-stack add --yes --name Work --source livesync --device-url https://couch.example.com
 EOF
 }
 
@@ -321,9 +368,13 @@ new_state() {
   local id="$1"
   mkdir -p "state/$id"
   chmod 700 "state/$id"
-  local f="state/$id/sync.env"
+  local f="state/$id/sync.env" keep=""
+  # A vault removed and added again keeps its self-hosted LiveSync keys:
+  # its CouchDB database is still encrypted with them.
+  [ -f "$f" ] && keep="$(grep -E '^(VAULT_ENCRYPT_PASSPHRASE|LIVESYNC_ID_RECOVERY_CODE)=' "$f" || true)"
   : > "$f"
   chmod 600 "$f"
+  [ -n "$keep" ] && printf '%s\n' "$keep" >> "$f"
   set_env "$f" INSTANCE_PREFIX "$P"
   set_env "$f" STACK_ID "$STACK_ID"
   set_env "$f" VAULT_ID "$id"
@@ -409,7 +460,7 @@ gen_uri() {
     docker run --rm -v "$vol:/deno-dir" -e DENO_DIR=/deno-dir \
       -e hostname="$host" -e username="$(couchdb_env COUCHDB_USER)" \
       -e password="$(couchdb_env COUCHDB_PASSWORD)" -e database="$id" \
-      -e passphrase="$VAULT_ENCRYPT_PASSPHRASE" -e id_recovery_code="${LIVESYNC_ID_RECOVERY_CODE:-}" \
+      -e passphrase="${VAULT_ENCRYPT_PASSPHRASE:?no VAULT_ENCRYPT_PASSPHRASE in $f}" -e id_recovery_code="${LIVESYNC_ID_RECOVERY_CODE:-}" \
       -e uri_mode=persistent "$GEN_IMAGE" run -A "$GEN_URL" </dev/null 2>&1 ) )" \
     || { echo "$out" | tail -5 >&2; die "the Setup URI generator failed"; }
   URI="$(echo "$out" | grep -m1 '^obsidian://setuplivesync?settings=')"
@@ -448,7 +499,7 @@ phones need an HTTPS address: see "Phones and HTTPS" in the README.
 ${C_DIM}Change it later with: $ME setup-uri <vault> --url${C_0}
 EOF
     echo >&2
-    ask "Device address [$cur]: " ans
+    ask "Device address [$cur]: " ans device-url
     ( cd sync/couchdb && set_env .env COUCHDB_DEVICE_URL "${ans:-$cur}" force )
   fi
   couchdb_env COUCHDB_DEVICE_URL
@@ -488,9 +539,8 @@ setup_livesync() {
 
 cmd_setup_uri() {
   require_installed
-  local id="${1:-}" change="" src name
-  [ "${2:-}" = "--url" ] && change=1
-  [ -n "$id" ] || { vault_rows; echo; ask "  Vault id: " id; }
+  local id="${1:-}" change="${CHANGE_URL:-}" src name
+  [ -n "$id" ] || { interactive_only "which vault: give its id"; vault_rows; echo; ask "  Vault id: " id; }
   src="$(reg list | awk -F'\t' -v id="$id" '$1==id {print $2}')"
   case "$src" in
     livesync) ;;
@@ -501,7 +551,13 @@ cmd_setup_uri() {
   # shellcheck disable=SC1090
   [ -n "$(source "state/$id/sync.env"; echo "${LIVESYNC_ID_RECOVERY_CODE:-}")" ] \
     || die "'$id' was set up before Setup URIs existed; remove it and add it again"
-  print_device_uri "$id" "$(device_url "$change")"
+  local url; url="$(device_url "$change")"
+  if [ -n "$JSON" ]; then
+    gen_uri "$id" "$url"
+    printf '{"vault":%s,"url":%s,"uri":%s,"passphrase":%s}\n' "$(json_str "$id")" "$(json_str "$url")" "$(json_str "$URI")" "$(json_str "$URI_PASS")"
+    return
+  fi
+  print_device_uri "$id" "$url"
 }
 
 setup_livesync_existing() {
@@ -517,10 +573,10 @@ In Obsidian on a device that already syncs: Settings → Self-hosted LiveSync
 → Setup → Copy the setup URI. It asks you to choose a passphrase for it.
 EOF
     echo
-    ask "Setup URI: " uri
-    [ -n "$uri" ] || die "a Setup URI is required"
-    ask_secret "  Its passphrase (hidden): " pass
-    [ -n "$pass" ] || die "the Setup URI passphrase is required"
+    ask_secret "Setup URI (hidden): " uri LIVESYNC_SETUP_URI
+    [ -n "$uri" ] || die "a Setup URI is required (LIVESYNC_SETUP_URI)"
+    ask_secret "  Its passphrase (hidden): " pass LIVESYNC_SETUP_PASSPHRASE
+    [ -n "$pass" ] || die "the Setup URI passphrase is required (LIVESYNC_SETUP_PASSPHRASE)"
     # Used once and not stored: the URI goes in as an env var for this run
     # only, the passphrase on stdin. The CLI keeps the decoded settings in
     # the vault's own data volume.
@@ -546,7 +602,7 @@ setup_official() {
   # Reuse a login from another Official Sync vault on this server, if any.
   for other in state/*/official/config/obsidian-headless/auth_token; do
     [ -s "$other" ] && [ "$other" != "$tokfile" ] || continue
-    ask "Use the Obsidian account already signed in on this server? [Y/n] " again
+    ask "Use the Obsidian account already signed in on this server? [Y/n] " again reuse-login
     case "$again" in [nN]*) ;; *)
       mkdir -p "$(dirname "$tokfile")"
       cp "$other" "$tokfile"
@@ -558,6 +614,7 @@ setup_official() {
   done
 
   if [ -z "$token" ]; then
+    interactive_only "no Obsidian account is signed in on this server to reuse; add an Official Sync vault interactively first ($ME add)"
     # The one step that can't be scripted: your Obsidian email, password and
     # MFA code have to be typed by you — a script that could do this for you
     # would need your raw account password sitting in a file.
@@ -583,11 +640,17 @@ setup_official() {
   local remote=()
   while IFS= read -r vn; do [ -n "$vn" ] && remote+=("$vn"); done < <(
     vc "$id" official run --rm -T obsidian-sync list-vaults </dev/null 2>/dev/null || true)
-  vn=""
-  if [ "${#remote[@]}" -eq 1 ]; then
+  vn="${PRESET[official-vault]:-}"
+  if [ -n "$vn" ]; then
+    if [ "${#remote[@]}" -gt 0 ] && ! printf '%s\n' "${remote[@]}" | grep -qxF "$vn"; then
+      die "no vault named '$vn' on this Obsidian account (it has: $(printf '%s, ' "${remote[@]}" | sed 's/, $//'))"
+    fi
+    ok "Using '$vn' from the account"
+  elif [ "${#remote[@]}" -eq 1 ]; then
     vn="${remote[0]}"
     ok "Found one vault on your account: $vn"
   elif [ "${#remote[@]}" -gt 1 ]; then
+    need official-vault "which vault on the Obsidian account"
     echo
     info "Vaults on your account:"
     for i in "${!remote[@]}"; do printf '    %s%d%s  %s\n' "$C_ACC" "$((i + 1))" "$C_0" "${remote[$i]}"; done
@@ -599,6 +662,7 @@ setup_official() {
       fi
     done
   else
+    need official-vault "the vault's name on the Obsidian account"
     warn "Couldn't list the vaults on your account, so type the name instead."
     ask "  Exact vault name on your Obsidian Sync account: " vn
   fi
@@ -610,7 +674,7 @@ setup_official() {
   if vc "$id" official run --rm -T obsidian-sync is-configured </dev/null >/dev/null 2>&1; then
     ok "Sync for '$vn' is already set up, reusing it"
   else
-    ask_secret "  End-to-end encryption password (blank if you didn't turn that on): " vp
+    ask_secret "  End-to-end encryption password (blank if you didn't turn that on): " vp OBSIDIAN_VAULT_PASSWORD
     # Passed by name (-e VAULT_PASSWORD), so it never shows up in `ps`.
     until out=$(VAULT_PASSWORD="$vp" vc "$id" official run --rm -T -e VAULT_PASSWORD obsidian-sync setup </dev/null 2>&1); do
       case "$out" in
@@ -619,10 +683,12 @@ setup_official() {
         *)
           echo "$out" | grep -v '^ *at \|Container ' | tail -5 | sed "s/^/    /"
           warn "Setting up sync didn't work (see above)."
+          interactive_only "Obsidian Sync setup failed"
           ask "  Try again? [Y/n] " again
           case "$again" in [nN]*) die "Obsidian Sync setup cancelled" ;; esac
           continue ;;
       esac
+      interactive_only "wrong or missing encryption password (OBSIDIAN_VAULT_PASSWORD)"
       info "It's the vault's encryption password, not your Obsidian account password."
       ask_secret "  Encryption password (blank to stop): " vp
       [ -n "$vp" ] || die "Obsidian Sync setup cancelled"
@@ -641,7 +707,8 @@ recommended: a deploy key is generated for it. HTTPS works too, with a
 token in the URL.
 EOF
   echo
-  ask "Repo URL: " repo
+  need git-repo "the repository URL"
+  ask "Repo URL: " repo git-repo
   [ -n "$repo" ] || die "a repo URL is required"
   set_env "$f" GIT_REPO_URL "$repo"
   set_env "$f" GIT_BRANCH main
@@ -659,7 +726,8 @@ Add this public key to the repository as a deploy key, with write access
 (GitHub: repo → Settings → Deploy keys → Add deploy key → Allow write access):
 EOF
         printf '\n    %s%s%s\n\n' "$C_B" "$(cat "$ssh/id_ed25519.pub")" "$C_0"
-        ask "Press Enter once it's added… " _
+        [ -n "$NONINTERACTIVE" ] && warn "Sync will fail until this deploy key is added to the repository." \
+          || ask "Press Enter once it's added… " _
       fi
       ;;
   esac
@@ -674,7 +742,8 @@ add_vault() {
   local name id choice src
   say "Add a vault"
   echo
-  ask "Vault name (e.g. Personal, Work): " name
+  need name "a vault name"
+  ask "Vault name (e.g. Personal, Work): " name name
   [ -n "$name" ] || { info "No name entered, nothing added."; return; }
   id="$(reg suggest-id "$name")"
   local g="$C_OK+$C_0" m="$C_WARN−$C_0"
@@ -703,7 +772,14 @@ add_vault() {
        $m Keep vaults/$id/ up to date yourself (rsync, Syncthing…)
 
 EOF
-  ask "Choice [1]: " choice
+  ask "Choice [1]: " choice source
+  case "${choice:-1}" in
+    livesync|self-hosted|self-hosted-livesync) choice=1 ;;
+    existing|existing-livesync|livesync-existing) choice=2 ;;
+    official|obsidian-sync|official-sync) choice=3 ;;
+    git) choice=4 ;;
+    none) choice=5 ;;
+  esac
   case "${choice:-1}" in
     1) src=livesync ;;
     2) src=livesync-existing ;;
@@ -739,7 +815,7 @@ screenshots of notes, and the vault opens in a browser tab.
 ${C_DIM}About 350 MB of RAM and a 1.3 GB download. More: "Obsidian app" in README.md${C_0}
 EOF
   echo
-  ask "Add the Obsidian app for '$name'? [y/N] " app
+  ask "Add the Obsidian app for '$name'? [y/N] " app app
   case "$app" in
     [yY]*) app_enable "$id" ;;
     *) info "Skipped. Later: $ME app enable $id" ;;
@@ -748,10 +824,10 @@ EOF
 
 remove_vault() {
   local id="${1:-}" src confirm
-  [ -n "$id" ] || ask "Id of the vault to remove: " id
+  [ -n "$id" ] || { interactive_only "which vault: $ME remove <id>"; ask "Id of the vault to remove: " id; }
   src="$(reg list | awk -F'\t' -v i="$id" '$1==i { print $2 }')"
   [ -n "$src" ] || { info "No vault with id '$id'."; return; }
-  ask "Remove '$id' from the stack? Its files stay in vaults/$id/. [y/N] " confirm
+  ask "Remove '$id' from the stack? Its files stay in vaults/$id/. [y/N] " confirm confirm
   case "$confirm" in [yY]*) ;; *) info "Kept it."; return ;; esac
   if [ -n "$(sync_dir "$src")" ] && [ -f "state/$id/sync.env" ]; then
     vc "$id" "$src" down -v --remove-orphans >/dev/null 2>&1 || true
@@ -826,7 +902,7 @@ vault_src() { reg list | awk -F'\t' -v i="$1" '$1==i { print $2 }'; }
 
 app_enable() {
   local id="${1:-}" f port ans token_new="" cfg _
-  [ -n "$id" ] || { vault_rows; echo; ask "  Vault id: " id; }
+  [ -n "$id" ] || { interactive_only "which vault: give its id"; vault_rows; echo; ask "  Vault id: " id; }
   [ -n "$(vault_src "$id")" ] || die "no vault '$id'"
   say "Setting up the Obsidian app for '$id'"
   info "It opens vaults/$id/ and doesn't sync by itself; the vault's own sync keeps it current."
@@ -861,7 +937,7 @@ app_enable() {
   if [ -z "$(app_env "$id" APP_PASSWORD)" ]; then set_env "$f" APP_PASSWORD "$(openssl rand -hex 12)"; fi
   if [ -z "$(app_env "$id" APP_PORT)" ]; then
     port="$(next_app_port)"
-    ask "Port for the browser UI, on localhost [$port]: " ans
+    ask "Port for the browser UI, on localhost [$port]: " ans app-port
     set_env "$f" APP_PORT "${ans:-$port}" force
   fi
 
@@ -886,7 +962,7 @@ runs the same plugins as the other devices. It's two-way, like the notes:
 plugin changes made here reach the other devices too.
 EOF
     echo
-    ask "Sync plugins and settings with the other devices? [y/N] " ans
+    ask "Sync plugins and settings with the other devices? [y/N] " ans settings-sync
     case "$ans" in
       [yY]*)
         set_env "state/$id/sync.env" SYNC_CONFIGS "app,appearance,appearance-data,hotkey,core-plugin,core-plugin-data,community-plugin,community-plugin-data" force
@@ -895,7 +971,7 @@ EOF
         step "Downloading plugins and settings" until_ok 60 settings_synced "$id" || warn "Still syncing; it carries on in the background."
         ok "Settings sync is on ${C_DIM}($(ls "vaults/$id/.obsidian/plugins" 2>/dev/null | wc -l | tr -d ' ') plugins here)${C_0}"
         echo
-        ask "Let AI tools install, remove and change plugins (reaching every device)? [y/N] " ans
+        ask "Let AI tools install, remove and change plugins (reaching every device)? [y/N] " ans plugin-changes
         case "$ans" in
           [yY]*) set_env "$f" APP_EXTENSIONS manage force ;;
           *) set_env "$f" APP_EXTENSIONS read force; info "Plugins are read-only for AI tools (APP_EXTENSIONS=read in $f)" ;;
@@ -918,7 +994,7 @@ run. Turning it off lets plugins in this vault's .obsidian folder, and any
 installed by AI tools, run on this server.
 EOF
     echo
-    ask "Turn restricted mode off now? [y/N] " ans
+    ask "Turn restricted mode off now? [y/N] " ans plugins
     case "$ans" in
       [yY]*) app_cli "$id" plugins:restrict off >/dev/null && ok "Restricted mode is off; community plugins can run" ;;
       *) info "Left on. Later: $ME app run $id plugins:restrict off" ;;
@@ -943,7 +1019,7 @@ kv() { printf '    %s%-14s%s %s\n' "$C_DIM" "$1" "$C_0" "$2"; }
 
 app_disable() {
   local id="${1:-}"
-  [ -n "$id" ] || ask "  Vault id: " id
+  [ -n "$id" ] || { interactive_only "which vault: give its id"; ask "  Vault id: " id; }
   app_on "$id" || { info "The app isn't enabled for '$id'."; return; }
   [ -f "state/$id/app.env" ] && ac "$id" down -v --remove-orphans >/dev/null 2>&1 || true
   reg set-app "$id" off
@@ -974,6 +1050,60 @@ cmd_app() {
       ;;
     *) die "usage: $ME app <status | enable [id] | disable [id] | run <id> <command...>>" ;;
   esac
+}
+
+# --- machine-readable output (--json), for scripts and the manager add-on ----
+
+json_str() { local v="${1//\\/\\\\}"; v="${v//\"/\\\"}"; v="${v//$'\n'/\\n}"; printf '"%s"' "$v"; }
+
+# container state as JSON: {"name":...,"state":"running","health":"healthy"} or null
+container_json() {
+  local c="$1"
+  [ -n "$c" ] || { printf 'null'; return; }
+  printf '{"name":%s,"state":%s,"health":%s}' "$(json_str "$c")" \
+    "$(json_str "$(docker inspect -f '{{.State.Status}}' "$c" 2>/dev/null || echo missing)")" \
+    "$(json_str "$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{end}}' "$c" 2>/dev/null || true)")"
+}
+
+vaults_json() {
+  local id src name first=1 apps
+  apps="$(reg apps)"
+  printf '['
+  while IFS=$'\t' read -r id src name; do
+    [ -n "$id" ] || continue
+    [ -n "$first" ] || printf ','; first=""
+    printf '{"id":%s,"name":%s,"source":%s,"notes":%s,"sync":' "$(json_str "$id")" "$(json_str "$name")" \
+      "$(json_str "$src")" "$(find "vaults/$id" -name '*.md' -not -path '*/.*' 2>/dev/null | wc -l | tr -d ' ')"
+    if [ -n "$(sync_dir "$src")" ]; then container_json "$(ours sync "$id" | head -1)"; else printf 'null'; fi
+    if grep -qx "$id" <<< "$apps"; then
+      printf ',"app":{"enabled":true,"port":%s,"container":' "$(json_str "$(app_env "$id" APP_PORT)")"
+      container_json "$(ours app "$id" | head -1)"; printf '}}'
+    else
+      printf ',"app":{"enabled":false}}'
+    fi
+  done <<< "$(reg list)"
+  printf ']\n'
+}
+
+status_json() {
+  local mcp=false
+  curl -sf "http://localhost:${MCP_PORT:-7002}/health" >/dev/null 2>&1 && mcp=true
+  printf '{"folder":%s,"prefix":%s,"mcp":{"url":%s,"responding":%s},"core":{"api":' \
+    "$(json_str "$ROOT")" "$(json_str "$P")" "$(json_str "http://localhost:${MCP_PORT:-7002}/mcp")" "$mcp"
+  container_json "$(ours core | grep -x "${P}obsidian-api" || true)"; printf ',"mcp":'
+  container_json "$(ours core | grep -x "${P}obsidian-mcp" || true)"; printf ',"couchdb":'
+  container_json "$(ours couchdb | head -1)"; printf '},"vaults":'
+  vaults_json
+  printf '}\n'
+}
+
+cmd_rename() {
+  require_installed
+  local id="${1:-}"; shift || true
+  local name="$*"
+  [ -n "$id" ] && [ -n "$name" ] || die "usage: $ME rename <vault id> <new name>"
+  reg rename "$id" "$name" || die "couldn't rename '$id'"
+  ok "Renamed '$id' to '$name' ${C_DIM}(its id and folder stay the same)${C_0}"
 }
 
 # --- commands ----------------------------------------------------------------
@@ -1062,6 +1192,7 @@ summary() {
 offer_link() {
   local name; name="$(default_link_name)"
   [ "$(readlink -f "/usr/local/bin/$name" 2>/dev/null)" = "$ROOT/obsidian-stack" ] && return 0
+  [ -z "$NONINTERACTIVE" ] || return 0
   echo
   ask "Add an '$name' command to manage this install from anywhere? [Y/n] " ans
   case "${ans:-y}" in [nN]*) ;; *) cmd_link "$name" || true ;; esac
@@ -1100,6 +1231,7 @@ vault_rows() {
 
 cmd_status() {
   require_installed
+  [ -n "$JSON" ] && { status_json; return; }
   say "obsidian-server-stack"
   local mcp_state
   if curl -sf "http://localhost:${MCP_PORT:-7002}/health" >/dev/null 2>&1; then mcp_state="${C_OK}● responding${C_0}"; else mcp_state="${C_ERR}● not responding${C_0}"; fi
@@ -1151,7 +1283,7 @@ cmd_logs() {
   if [ "$src" = none ]; then echo "  '$target' has no sync, so there are no sync logs."; return; fi
   c="$(target_container "$target")"
   [ -n "$c" ] || die "nothing running for '$target' (vault ids: $(reg list | cut -f1 | tr '\n' ' '))"
-  docker logs --tail 100 $follow "$c" 2>&1
+  docker logs --tail "${PRESET[tail]:-100}" $follow "$c" 2>&1
 }
 
 cmd_restart() {
@@ -1199,8 +1331,7 @@ cmd_update() {
 cmd_uninstall() {
   load_env
   [ -n "$STACK_ID" ] || die "no STACK_ID in .env, so there's nothing labelled as this install's"
-  local yes="" ans id src name c link
-  [ "${1:-}" = "--yes" ] && yes=1
+  local yes="$NONINTERACTIVE" ans id src name c link
 
   say "Uninstall ($ROOT)"
   info "Removes everything labelled obsidian-server-stack.id=$STACK_ID:"
@@ -1316,7 +1447,7 @@ cmd_endpoint() {
 }
 
 cmd_menu() {
-  [ -n "${OBSIDIAN_STACK_NO_MENU:-}" ] && return 0
+  [ -n "${OBSIDIAN_STACK_NO_MENU:-}${NONINTERACTIVE}" ] && return 0
   require_installed
   local choice target
   while :; do
@@ -1349,14 +1480,49 @@ cmd_menu() {
 
 # --- dispatch ----------------------------------------------------------------
 
+# parse_opts ARGS... — options that answer questions become PRESET entries;
+# everything else is left in ARGS for the command.
+ARGS=()
+CHANGE_URL=""
+parse_opts() {
+  local key val
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --yes|-y) NONINTERACTIVE=1; PRESET[confirm]=y ;;
+      --json) JSON=1 ;;
+      --name|--source|--device-url|--app|--app-port|--plugins|--settings-sync|--plugin-changes|--git-repo|--official-vault|--reuse-login|--tail)
+        [ $# -ge 2 ] || die "$1 needs a value"
+        key="${1#--}"; val="$2"
+        case "$key" in
+          app|plugins|settings-sync|plugin-changes|reuse-login)
+            case "${val,,}" in
+              y|yes|on|true|1) val=y ;;
+              n|no|off|false|0) val=n ;;
+              *) die "$1 takes yes or no" ;;
+            esac ;;
+        esac
+        PRESET[$key]="$val"; shift ;;
+      --url)
+        CHANGE_URL=1
+        if [ $# -ge 2 ] && [[ "$2" != --* ]]; then PRESET[device-url]="$2"; shift; fi ;;
+      --) shift; ARGS+=("$@"); break ;;
+      *) ARGS+=("$1") ;;
+    esac
+    shift
+  done
+}
+
 load_env
+parse_opts "$@"
+set -- "${ARGS[@]+"${ARGS[@]}"}"
 cmd="${1:-menu}"
 [ $# -gt 0 ] && shift
 case "$cmd" in
   install) cmd_install ;;
   menu) cmd_menu ;;
   status) cmd_status ;;
-  vaults|list) require_installed; vault_rows ;;
+  vaults|list) require_installed; if [ -n "$JSON" ]; then vaults_json; else vault_rows; fi ;;
+  rename) cmd_rename "$@" ;;
   add) require_installed; add_vault ;;
   remove|rm) require_installed; remove_vault "${1:-}" ;;
   logs) cmd_logs "$@" ;;

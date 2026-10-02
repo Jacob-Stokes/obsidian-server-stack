@@ -183,6 +183,14 @@ export function setApp(vaultsRoot, id, enabled) {
   writeRegistry(vaultsRoot, { ...reg, revision: reg.revision + 1, vaults });
 }
 
+// A vault's display name; its id (and folder) never change.
+export function renameVault(vaultsRoot, id, name) {
+  const reg = readRegistry(vaultsRoot);
+  if (!reg.vaults.some((v) => v.id === id)) throw new Error(`No vault with id "${id}".`);
+  const vaults = reg.vaults.map((v) => (v.id === id ? { ...v, name: name.trim() } : v));
+  writeRegistry(vaultsRoot, { ...reg, revision: reg.revision + 1, vaults });
+}
+
 // --- CLI (used by install.sh) ------------------------------------------------
 //   node registry.mjs <vaultsRoot> list               -> id<TAB>source<TAB>name per line
 //   node registry.mjs <vaultsRoot> suggest-id <name>
@@ -191,6 +199,7 @@ export function setApp(vaultsRoot, id, enabled) {
 //   node registry.mjs <vaultsRoot> init                -> create an empty registry if missing
 //   node registry.mjs <vaultsRoot> apps                -> ids of vaults with the app add-on on
 //   node registry.mjs <vaultsRoot> set-app <id> on|off
+//   node registry.mjs <vaultsRoot> rename <id> <name>
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {
   const [root, cmd, ...args] = process.argv.slice(2);
@@ -205,6 +214,9 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.a
       addVault(root, { id, source, name: name.join(" ") });
     } else if (cmd === "remove") {
       removeVault(root, args[0]);
+    } else if (cmd === "rename") {
+      const [id, ...name] = args;
+      renameVault(root, id, name.join(" "));
     } else if (cmd === "apps") {
       for (const v of readRegistry(root, { optional: true }).vaults) if (v.app) console.log(v.id);
     } else if (cmd === "set-app") {

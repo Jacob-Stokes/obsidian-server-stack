@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { addVault, availableVaults, readRegistry, registryPath, removeVault, setApp, suggestId } from "./registry.mjs";
+import { addVault, availableVaults, readRegistry, registryPath, removeVault, renameVault, setApp, suggestId } from "./registry.mjs";
 import { createApi } from "./server.mjs";
 
 function fixture(t) {
@@ -129,4 +129,14 @@ test("the app add-on flag is reported per vault and can be turned off again", as
   setApp(root, "notes", false);
   assert.equal("app" in readRegistry(root).vaults[0], false);
   assert.throws(() => setApp(root, "missing", true), /No vault/);
+});
+
+test("renaming keeps the id and refuses a name another vault has", async (t) => {
+  const { root } = fixture(t);
+  addVault(root, { id: "notes", name: "Notes", source: "livesync" });
+  addVault(root, { id: "work", name: "Work", source: "git" });
+  renameVault(root, "notes", "Personal notes");
+  assert.deepEqual(readRegistry(root).vaults.map((v) => [v.id, v.name]), [["notes", "Personal notes"], ["work", "Work"]]);
+  assert.throws(() => renameVault(root, "notes", "work"), /named/);
+  assert.throws(() => renameVault(root, "missing", "X"), /No vault/);
 });
