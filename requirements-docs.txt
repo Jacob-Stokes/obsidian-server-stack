@@ -1,0 +1,4 @@
+# Tools for building the docs site (mkdocs build). MkDocs is held below 2.0,
+# which breaks Material for MkDocs (renovate.json keeps it there).
+mkdocs==1.6.1
+mkdocs-material==9.7.7

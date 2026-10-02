@@ -1,0 +1,53 @@
+site_name: Obsidian Server Stack
+site_description: Obsidian vaults on a server, synced across devices and reachable over MCP.
+site_url: https://jacob-stokes.github.io/obsidian-server-stack/
+repo_url: https://github.com/Jacob-Stokes/obsidian-server-stack
+repo_name: obsidian-server-stack
+edit_uri: edit/main/docs/
+
+theme:
+  name: material
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: deep purple
+      accent: purple
+      toggle:
+        icon: material/weather-night
+        name: Dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: deep purple
+      accent: purple
+      toggle:
+        icon: material/weather-sunny
+        name: Light mode
+  features:
+    - navigation.sections
+    - navigation.footer
+    - content.code.copy
+    - search.suggest
+
+markdown_extensions:
+  - tables
+  - admonition
+  - attr_list
+  - toc:
+      permalink: true
+  - pymdownx.superfences
+
+nav:
+  - Overview: index.md
+  - Getting started:
+      - Installer: installer.md
+      - Docker Compose: compose.md
+  - Using it:
+      - How it works: how-it-works.md
+      - Self-hosted LiveSync: livesync.md
+      - Managing with obsidian-stack: managing.md
+      - Connecting to the MCP: mcp.md
+  - Add-ons:
+      - Obsidian app: obsidian-app.md
+      - Managing from AI tools: ai-management.md
+  - Decisions:
+      - "001: Managing the stack through the MCP": decisions/001-mcp-stack-management.md

@@ -11,12 +11,21 @@
 
 <p align="center">
   <a href="https://github.com/Jacob-Stokes/obsidian-server-stack/actions/workflows/build.yml"><img src="https://github.com/Jacob-Stokes/obsidian-server-stack/actions/workflows/build.yml/badge.svg" alt="Build status"></a>
+  <a href="https://jacob-stokes.github.io/obsidian-server-stack/"><img src="https://img.shields.io/badge/docs-online-7c4dff" alt="Documentation"></a>
   <a href="LICENSE"><img src="https://img.shields.io/github/license/Jacob-Stokes/obsidian-server-stack" alt="MIT license"></a>
 </p>
 
-Most Obsidian MCP servers run on a personal computer, and many also need the Obsidian app open, so the vault is unreachable whenever that machine is off. This stack keeps copies of one or more vaults on an always-on server instead, each synced with other devices in its own way and all reachable by any MCP client over HTTP. It runs headless: no Obsidian app or virtual machine, just a few small containers and the notes as plain markdown files.
+Most Obsidian MCP servers run on a personal computer, and many also need the Obsidian app open, so the vault is unreachable whenever that machine is off. This stack keeps copies of one or more vaults on an always-on server instead, each synced with other devices in its own way (self-hosted LiveSync, Official Obsidian Sync or git) and all reachable by any MCP client over HTTP. It runs headless: a few small containers, about 230 MB of RAM, and the notes as plain markdown files.
+
+<p align="center">
+  <img src="assets/installer.gif" alt="obsidian-stack installing the stack and adding a self-hosted LiveSync vault, sped up" width="720">
+</p>
 
 ## Install
+
+Two ways, running the same containers. Requires Linux with Docker (Compose v2).
+
+**Installer**, for most setups: asks a few questions, adds vaults, makes Setup URIs for devices, and leaves an `obsidian-stack` command for managing it.
 
 ```bash
 git clone https://github.com/Jacob-Stokes/obsidian-server-stack.git
@@ -24,195 +33,18 @@ cd obsidian-server-stack
 ./install.sh
 ```
 
-Requires Linux with Docker (Compose v2), `openssl` and `curl`, plus `ssh-keygen` for git sync. Run as root or with sudo.
+**Docker Compose**, for servers where everything is a compose file: [`examples/compose.yml`](examples/compose.yml) builds the services straight from this repository, with no installer. See [Docker Compose](https://jacob-stokes.github.io/obsidian-server-stack/compose/).
 
-The installer generates secrets, starts the core containers, adds a first vault, and offers to put an `obsidian-stack` command on the PATH for managing the install afterwards. Once finished, the MCP endpoint is at `http://localhost:7002/mcp`, with its bearer token in `.env`.
+The MCP endpoint is then `http://localhost:7002/mcp`, with its bearer token in `.env`.
 
-<p align="center">
-  <img src="assets/installer.gif" alt="obsidian-stack installing the stack and adding a self-hosted LiveSync vault, sped up" width="720">
-  <br>
-  <sub>A full install with one self-hosted LiveSync vault, sped up.</sub>
-</p>
+## Documentation
 
-It's light: a test install with three vaults (two on self-hosted LiveSync, one on Official Sync) idles at about 230 MB of RAM and next to no CPU. Measured per part:
+**[jacob-stokes.github.io/obsidian-server-stack](https://jacob-stokes.github.io/obsidian-server-stack/)**
 
-| Part | RAM (idle) | Disk |
-|---|---|---|
-| API + MCP | ~50 MB | ~0.6 GB of images |
-| CouchDB, shared by self-hosted LiveSync vaults | ~75 MB | ~0.5 GB, plus the databases |
-| Each self-hosted or existing LiveSync vault | 25–60 MB | ~0.4 GB image, shared |
-| Each Official Sync vault | ~25 MB | ~0.3 GB image, shared |
-| [Obsidian app](#obsidian-app-optional), optional, per vault | 325–400 MB, more with many plugins or the browser tab open | ~5 GB image (1.3 GB download), shared, plus ~0.4 GB per vault |
-
-## How it works
-
-One install serves any number of vaults. Each vault is a folder of markdown files, `vaults/<id>/`, where the id comes from its name (`Work Notes` becomes `work-notes`). The list of vaults is `vaults/.registry.json`, managed by `obsidian-stack`.
-
-Two containers serve every vault:
-
-| Container | Job |
-|---|---|
-| `obsidian-mcp` | MCP server, the endpoint clients connect to. One bearer token covers every vault in the install. |
-| `obsidian-api` | REST API over the vault folders. Only `obsidian-mcp` can reach it. Each request names its vault, and the vault list is re-read on every request, so vaults can be added or removed without a restart. |
-
-MCP clients call `obsidian_list_vaults` to see the vaults, then pass a `vault_id` to every other tool. With a single vault the id can be left out; the server says which case applies when a client connects.
-
-Each vault stays in sync with other devices on its own, with its own sync source, its own containers, and its own settings and credentials in `state/<id>/`:
-
-| Source | Containers per vault | On other devices | Cost |
-|---|---|---|---|
-| Self-hosted LiveSync | `obsidian-<id>-livesync`, plus one shared `obsidian-couchdb` | [Self-hosted LiveSync](https://github.com/vrtmrz/obsidian-livesync) plugin, set up from a generated Setup URI | Free |
-| Existing LiveSync server | `obsidian-<id>-livesync` | An existing LiveSync setup, joined via Setup URI | Free |
-| Official Obsidian Sync | `obsidian-<id>-official-sync` ([obsidian-headless](https://github.com/obsidianmd/obsidian-headless)) | Obsidian Sync | [Subscription](https://obsidian.md/sync) |
-| Git | `obsidian-<id>-git-sync` | [obsidian-git](https://github.com/Vinzent03/obsidian-git) plugin | Free |
-| None | | `vaults/<id>/` is managed manually | Free |
-
-Because credentials are per vault, one install can mix sources and accounts: two vaults on different Obsidian Sync accounts, one on git, another joining a LiveSync server elsewhere, and so on.
-
-### Self-hosted LiveSync
-
-Self-hosted LiveSync vaults share one CouchDB server, with a database per vault. Each vault is end-to-end encrypted, with obfuscated file paths, so CouchDB only holds ciphertext.
-
-Devices are set up with a Setup URI, made by the LiveSync project's own generator. Adding the vault prints one, with its passphrase, and `obsidian-stack setup-uri <id>` prints another at any time. The URIs don't expire, any number of devices can use the same one, and every URI for a vault carries the same encryption passphrase and settings, so a device added months later joins the same vault. On each device: install the plugin, choose "Use the copied setup URI" (or open the URI on the device), and enter the passphrase. Devices sync every 60 seconds by default; switching the plugin's sync mode to LiveSync makes it real time. The server's own copy always runs in LiveSync mode, so MCP writes reach CouchDB within seconds.
-
-When a device's plugin asks, it should **fetch from the server**, not rebuild or overwrite it: the server's copy has already set the vault up, so no device is ever the first. A rebuild locks the server's copy out; `obsidian-stack status` then says so, and `obsidian-stack resync <id>` fetches the vault again (the server's previous files are kept aside).
-
-**Versions.** Devices update the LiveSync plugin on their own, and a newer plugin can upgrade a vault's database to a format an older client can't read. So the server's client is built from the same LiveSync release's source, not from LiveSync's published images, which can trail the plugin by weeks. [Renovate](https://docs.renovatebot.com) opens a pull request for each new LiveSync release, moving the client and the Setup URI generator together, and [`scripts/test-livesync.sh`](scripts/test-livesync.sh) tests it in CI: a device joins with a Setup URI, notes sync both ways, and `resync` recovers a locked vault. `obsidian-stack update` brings a merged bump to an install.
-
-### Phones and HTTPS
-
-Obsidian on iOS and Android only connects to servers over `https://`. Both operating systems block plain `http://` from the app, and the block applies to every network, including a Tailscale tailnet or a home Wi-Fi network. Obsidian desktop accepts `http://`.
-
-This matters only for self-hosted LiveSync, the one source where devices connect to this server:
-
-| Source | What devices connect to | HTTPS needed on this server |
-|---|---|---|
-| Self-hosted LiveSync | This server's CouchDB (port 5984) | Yes, for phones |
-| Existing LiveSync server | That server | No (that server's own address) |
-| Official Obsidian Sync | Obsidian's servers, already HTTPS | No |
-| Git | The git host, already HTTPS or SSH | No |
-
-To give CouchDB an HTTPS address, `sync/couchdb` has optional profiles for [Tailscale](https://tailscale.com) (an `https://<name>.<tailnet>.ts.net` address, private to the tailnet), [Caddy](https://caddyserver.com) (a domain with automatic certificates) and [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/) (a domain, no open ports); see [sync/couchdb](sync/couchdb/README.md). An existing reverse proxy pointed at port 5984 works too. The address devices use is asked for when the first self-hosted LiveSync vault is added and goes into each Setup URI; `obsidian-stack setup-uri <id> --url` changes it and prints a new URI.
-
-## Managing
-
-`obsidian-stack` manages one install: adding and removing vaults, checking sync, reading logs. Run with no arguments, it opens an interactive menu.
-
-| Command | Does |
-|---|---|
-| `obsidian-stack` | Interactive menu |
-| `obsidian-stack status` | Core containers, and each vault's sync state and note count |
-| `obsidian-stack vaults` | List vaults |
-| `obsidian-stack add` / `remove [id]` | Add a vault, or remove one (its files are kept) |
-| `obsidian-stack app enable\|disable <id>` | The optional Obsidian app for a vault (below) |
-| `obsidian-stack resync <id>` | Self-hosted LiveSync: fetch the vault again, after a device rebuilt it |
-| `obsidian-stack setup-uri <id> [--url]` | Setup URI for a self-hosted LiveSync vault's devices; `--url` changes the address they connect to |
-| `obsidian-stack logs <id\|api\|mcp\|couchdb> [-f]` | Logs for a vault's sync or a core container |
-| `obsidian-stack restart <id\|api\|mcp\|couchdb\|all>` | Restart one part, or everything |
-| `obsidian-stack update` | `git pull`, rebuild, and restart everything on the new version |
-| `obsidian-stack endpoint [--show-token]` | MCP URL and bearer token |
-| `obsidian-stack link [name]` | Add the command to `/usr/local/bin` |
-| `obsidian-stack manager enable\|disable` | Let AI tools manage this install ([below](#managing-the-stack-from-ai-tools-optional)) |
-| `obsidian-stack licenses [--full]` | Licences of the stack and of everything it uses; `--full` shows the full texts |
-| `obsidian-stack uninstall [--yes]` | Remove the install's containers, images and command; notes are kept unless chosen |
-
-Every question it asks can also be answered with an option, for scripts: `obsidian-stack add --yes --name Work --source livesync --device-url https://couchdb.example.com` (`obsidian-stack help` lists them). `--yes` takes the default for anything not given; secrets such as an encryption password come from environment variables, never options. `status`, `vaults` and `setup-uri` have `--json` output.
-
-The command always acts on the install it belongs to: the folder it lives in (following the link on the PATH), or one given with `--dir` or `$OBSIDIAN_STACK_DIR`. Every container the stack creates carries a Docker label with the install's `STACK_ID` from `.env`, and the command finds containers by that label rather than by name, so other Obsidian containers on the machine are never affected.
-
-## Obsidian app (optional)
-
-Everything above works on plain markdown files, with no Obsidian app on the server. Some things only the app can do: running community plugins such as [Linter](https://github.com/platers/obsidian-linter) or [Templater](https://github.com/SilentVoid13/Templater), or any command from the command palette. For those, `obsidian-stack app enable <id>` adds the full Obsidian app for one vault:
-
-- **In a browser tab:** [LinuxServer.io's Obsidian image](https://docs.linuxserver.io/images/docker-obsidian/) runs the desktop app on the server, at `http://localhost:7300` behind a generated login (in `state/<id>/app.env`). Like the MCP, it listens on localhost only.
-- **Driven by the MCP:** a small service in the same container works through the [official Obsidian CLI](https://obsidian.md/help/cli). Four tools appear for vaults with the app:
-
-| Tool | Does |
-|---|---|
-| `obsidian_app_commands` | List commands, including plugins' commands (pass a note to see the ones that act on a note) |
-| `obsidian_app_run_command` | Run a command, optionally on a given note |
-| `obsidian_app_plugins` | Search the community directory; install, update, uninstall, enable and disable plugins; read and change each plugin's settings |
-| `obsidian_app_appearance` | Search, install and switch themes; create, enable, disable and delete CSS snippets |
-| `obsidian_app_bases` | List [Bases](https://obsidian.md/help/bases) and their views, query a view's rows as JSON (exactly as Obsidian evaluates them), and create a note through a base |
-| `obsidian_app_vault_health` | Orphaned notes, dead ends and unresolved links, from Obsidian's own link index |
-| `obsidian_app_screenshot` | An image of the app, optionally after opening a file: canvases, diagrams, Bases, plugin views such as Kanban. Any size per call (`width`, `height`, `scale`); 1600×1000 at 2× by default, set by `APP_SCREENSHOT_SIZE` |
-
-- **Same files, no extra sync:** the app opens `vaults/<id>/` and doesn't sync by itself. The vault's own sync keeps that folder current, and the app picks up changes on disk. Its own sync (LiveSync plugin or Obsidian Sync) is best left off, as it would be a second sync client on the same folder.
-- **Plugins from the other devices (Official Sync):** for an Official Sync vault, enabling the app offers to turn on settings sync as well. The other devices' community plugins, their settings, theme and hotkeys then come to the server, and the app runs them. Like the notes, it's two-way: plugin changes made on the server reach every device. So the same step asks whether the MCP may change plugins, and leaves them read-only unless told otherwise.
-
-Enabling it asks whether to turn off Obsidian's restricted mode, which otherwise keeps community plugins from running. Plugins are code from their authors, and with restricted mode off they run on the server with access to the vault. Two settings in `state/<id>/app.env` limit what the MCP may do: `APP_COMMANDS` lists the commands it may run (for example `obsidian-linter:*,editor:*`), and `APP_EXTENSIONS=read` lets it see plugins, themes and snippets but not change them. Arbitrary JavaScript (`eval`) is never exposed. `obsidian-stack app run <id> <command>` runs any Obsidian CLI command directly, e.g. `plugins:restrict off`.
-
-It's the heaviest part by far: 325–400 MB of RAM per vault while idle, against about 230 MB for the whole stack without it. Starting with 13 community plugins took about 870 MB before settling, and the browser tab adds more while open. The image is a 1.3 GB download and about 5 GB on disk. If Obsidian exits, including when its window is closed in the browser, it is reopened within about 30 seconds.
-
-Each vault gets its own app container rather than sharing one. Obsidian can open several vaults in one container, and the CLI can target each, but in testing it saved almost no memory (two vaults in one container used about 675 MB, the same as two containers), since most of the cost is per window. It also let one vault's plugins read the other vaults, and resizing the shared screen for one vault's screenshots left the other vault's window the wrong size.
-
-## Managing the stack from AI tools (optional)
-
-`obsidian-stack manager enable` lets AI tools connected to the MCP manage the install itself. Five `obsidian_stack_*` tools appear:
-
-| Tool | Does |
-|---|---|
-| `obsidian_stack_status` | The core containers and every vault: sync source and state, note count, Obsidian app |
-| `obsidian_stack_vaults` | Add a vault (self-hosted LiveSync, Official Sync, git or none), rename one, or remove one (its notes are kept) |
-| `obsidian_stack_sync` | Restart a vault's sync, read its recent logs, or fetch a LiveSync vault again after a device rebuilt it |
-| `obsidian_stack_app` | Turn the Obsidian app on or off for a vault |
-| `obsidian_stack_setup_uri` | A Setup URI and passphrase for a self-hosted LiveSync vault's devices |
-
-It's off by default because it needs Docker, which is root-equivalent on the server. It runs in its own container (`extras/manager`), separate from the MCP, and only performs those operations, each as an `obsidian-stack` command with checked arguments: no raw Docker, no uninstall or update, no deleting notes. Some things stay at the terminal: Official Sync vaults can only be added by reusing an account already signed in on the server, and joining an existing LiveSync server needs its Setup URI and passphrase. Setup URIs, passphrases and git deploy keys it creates are returned to the AI client, so they appear in that conversation. With the manager on, keep the MCP private or behind OAuth. The reasoning: [docs/decisions/001-mcp-stack-management.md](docs/decisions/001-mcp-stack-management.md).
-
-## Running a second instance
-
-Multiple vaults and multiple sync accounts fit in one install. A second, separate install is for vaults that need their own MCP endpoint and token, for example one set for one person or agent and another set for another, since a token sees every vault in its install. It's also a way to try a new version alongside a working one.
-
-Give the second install its own prefix and port before running `./install.sh`:
-
-```bash
-cp .env.example .env
-sed -i 's/^INSTANCE_PREFIX=.*/INSTANCE_PREFIX=test-/; s/^MCP_PORT=.*/MCP_PORT=7102/' .env
-```
-
-Its containers, networks and volumes get the prefix, and its command is named after it, e.g. `obsidian-stack-test`. If both use self-hosted LiveSync, the second also needs a different `COUCHDB_PORT` in `sync/couchdb/.env`.
-
-## Without the installer
-
-The services are ordinary compose services, and Docker Compose can build them straight from this repository at a release tag, so a deployment can also be a single hand-written compose file: [examples/compose.yml](examples/compose.yml) serves one Official Sync vault. Without `obsidian-stack`, the vault list comes from the environment instead of `vaults/.registry.json`:
-
-- `VAULTS` (obsidian-api): `id[:source[:name]]`, comma-separated, e.g. `notes:official,work:livesync:Work notes`. Each vault's folder is `<VAULTS_ROOT>/<id>`. While it's set, the registry file isn't used and `obsidian-stack` can't change the vaults.
-- `CONFIG_PATHS` (obsidian-api, optional): folders inside `.obsidian` that the API may read and write, comma-separated, e.g. `.obsidian/icons` for an icon plugin's custom icons. The rest of `.obsidian` stays out of reach.
-
-The installer's helpers (Setup URIs, `resync`, the manager, `app enable`) aren't available this way; the Obsidian app add-on is a compose file of its own, in `extras/obsidian-app`.
-
-## Reaching the MCP
-
-The MCP listens on `localhost:7002` only. Remote access is left to an existing tool, such as:
-
-- [Tailscale Serve](https://tailscale.com/kb/1312/serve): private to the tailnet. `tailscale serve --bg 7002`
-- [Tailscale Funnel](https://tailscale.com/kb/1223/funnel): public URL, needed for web-based clients. `tailscale funnel --bg 7002`
-- [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/): public URL on a custom domain, no open ports
-- A reverse proxy such as [Caddy](https://caddyserver.com) or [nginx](https://nginx.org), if the server has a public IP
-
-Clients authenticate with `Authorization: Bearer <MCP_BEARER_TOKEN>`. For clients that require an OAuth login, set the `MCP_OAUTH_*` values in `.env`. A public endpoint is protected only by that token.
-
-## Updating and uninstalling
-
-To update, run `obsidian-stack update`. The `.env`, vaults and sync settings are preserved, and every vault's sync is restarted on the new version.
-
-To remove one vault, run `obsidian-stack remove <id>`. Its notes stay in `vaults/<id>/` and its settings in `state/<id>/` until deleted by hand.
-
-To uninstall, run `obsidian-stack uninstall`. It removes every container labelled with the install's `STACK_ID`, its network, built images and `obsidian-stack` command, then asks separately whether to delete the CouchDB databases and the notes, settings and `.env`. Both are kept unless chosen; devices keep their own copies either way. `obsidian-stack uninstall --yes` skips the prompts and keeps everything on disk.
-
-## Tools
-
-All tool names start with `obsidian_`. Every tool except `list_vaults` takes a `vault_id`. With a single vault it can be omitted, and the server says so when a client connects; with several, an omitted id is refused with the list of vaults.
-
-| Group | Tools |
-|---|---|
-| Vaults | `list_vaults` (id, name and sync source of each vault; optional search) |
-| Read | `get_note`, `list_notes`, `search_notes`, `links`, `status` |
-| Write | `write_note`, `append_to_note`, `patch_note`, `replace_in_note` |
-| Organise | `move_note`, `delete_note` (moves to `.trash`), `bulk` |
-| Metadata | `manage_frontmatter`, `manage_tags` |
-| Other | `daily` (daily notes), `attachments` (non-markdown files) |
+- [How it works](https://jacob-stokes.github.io/obsidian-server-stack/how-it-works/): vaults, containers and sync sources
+- [Self-hosted LiveSync](https://jacob-stokes.github.io/obsidian-server-stack/livesync/): devices, Setup URIs, HTTPS for phones
+- [Managing with obsidian-stack](https://jacob-stokes.github.io/obsidian-server-stack/managing/) and [connecting to the MCP](https://jacob-stokes.github.io/obsidian-server-stack/mcp/)
+- Optional: the [Obsidian app](https://jacob-stokes.github.io/obsidian-server-stack/obsidian-app/) for plugins, Bases and screenshots, and [managing the stack from AI tools](https://jacob-stokes.github.io/obsidian-server-stack/ai-management/)
 
 ## License
 

@@ -7,3 +7,4 @@ dist/
 # vault contents, the vault registry, and each vault's sync credentials/state
 vaults/
 state/
+site/
