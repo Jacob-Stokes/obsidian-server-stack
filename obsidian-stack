@@ -1051,8 +1051,14 @@ cmd_uninstall() {
       [ -f "state/$id/app.env" ] && ac "$id" down -v --remove-orphans >/dev/null 2>&1 && ok "removed the Obsidian app for '$id'"
     done
     while IFS=$'\t' read -r id src name; do
-      [ -n "$id" ] && [ -n "$(sync_dir "$src")" ] && [ -f "state/$id/sync.env" ] || continue
-      vc "$id" "$src" down -v --remove-orphans >/dev/null 2>&1 && ok "removed sync for '$id'"
+      [ -n "$id" ] || continue
+      if [ -n "$(sync_dir "$src")" ] && [ -f "state/$id/sync.env" ]; then
+        vc "$id" "$src" down -v --remove-orphans >/dev/null 2>&1 && ok "removed sync for '$id'"
+      fi
+      # volumes `down -v` misses: ones from an older version of a compose file
+      for project in "${P}obsidian-$id" "${P}obsidian-$id-app"; do
+        docker volume ls -q --filter "label=com.docker.compose.project=$project" | xargs -r docker volume rm >/dev/null 2>&1 || true
+      done
     done <<< "$(reg list 2>/dev/null)"
   fi
 
