@@ -15,11 +15,29 @@
   <a href="LICENSE"><img src="https://img.shields.io/github/license/Jacob-Stokes/obsidian-server-stack" alt="MIT license"></a>
 </p>
 
-Most Obsidian MCP servers run on a personal computer, and many also need the Obsidian app open, so the vault is unreachable whenever that machine is off. This stack keeps copies of one or more vaults on an always-on server instead, each synced with other devices in its own way (self-hosted LiveSync, Official Obsidian Sync or git) and all reachable by any MCP client over HTTP. It runs headless: a few small containers, about 230 MB of RAM, and the notes as plain markdown files.
+An Obsidian vault is a good long-term memory for AI tools: notes, plans, research, journals, all in plain markdown. But most Obsidian MCP servers run on a personal computer, and many need the Obsidian app open, so the notes disappear whenever that machine sleeps. That rules out AI tools on a phone, web-based clients, and agents that run on a schedule.
+
+This stack keeps the vault on an always-on server instead. Devices go on syncing with Obsidian as usual, and any MCP client can read and write the same notes over HTTP, at any hour.
 
 <p align="center">
   <img src="assets/installer.gif" alt="obsidian-stack installing the stack and adding a self-hosted LiveSync vault, sped up" width="720">
 </p>
+
+## Features
+
+**Works with the sync already in use.** Each vault syncs in its own way: self-hosted LiveSync (free, end-to-end encrypted, set up on devices with a Setup URI), Official Obsidian Sync, or git. One server can hold several vaults, mixing sync methods and accounts, each with its own settings.
+
+**Thorough note tools.** Read, search, write and edit notes; frontmatter, tags, links and backlinks; daily notes; attachments; bulk changes across many files. Notes stay plain markdown, edited in place, so every device sees the changes through its normal sync.
+
+**Careful with the vault.** Edits can check that a note hasn't changed since it was read, so nothing written on a phone a minute ago gets overwritten. Deletions go to the vault's trash, bulk changes can be previewed first, and Obsidian's settings folder is out of reach.
+
+**Headless and light.** No Obsidian app or virtual machine: a few small containers, about 230 MB of RAM for a server with three vaults.
+
+**The full app when needed.** An optional add-on runs the real Obsidian app per vault, which lets AI tools run community plugins and commands, query Bases, and take screenshots of canvases and plugin views. With Official Sync, plugins and settings come from the other devices.
+
+**Managed from AI tools, too.** Another optional add-on lets an AI client add vaults, check sync and hand out Setup URIs, through a fixed set of checked operations.
+
+**Reachable safely.** The MCP listens on localhost, with a bearer token and optional OAuth login, ready to put behind Tailscale, Cloudflare Tunnel or a reverse proxy.
 
 ## Install
 
