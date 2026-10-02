@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { serve } from "@hono/node-server";
 import { Hono } from "hono";
 import { mergeFrontmatter, sliceFrontmatter } from "./frontmatter.mjs";
-import { availableVaults, vaultDir } from "./registry.mjs";
+import { availableVaults, registryFromEnv, vaultDir } from "./registry.mjs";
 
 const API_KEY = process.env.API_KEY || "";
 const PORT = parseInt(process.env.PORT || "3000", 10);
@@ -614,6 +614,10 @@ export function createVaultApi(VAULT_PATH, expectedKey = apiKey, scope = "") {
   return app;
 }
 
+function registryProblem(error) {
+  return process.env.VAULTS ? error.message : "The vault registry needs attention; re-run install.sh";
+}
+
 export function createApi({ vaultsRoot = "/vaults", expectedKey = apiKey } = {}) {
   const app = new Hono();
   const routes = new Map();
@@ -629,8 +633,8 @@ export function createApi({ vaultsRoot = "/vaults", expectedKey = apiKey } = {})
   app.get("/vaults", (c) => {
     try {
       return c.json({ vaults: availableVaults(vaultsRoot) });
-    } catch {
-      return c.json({ error: "The vault registry needs attention; re-run install.sh" }, 503);
+    } catch (error) {
+      return c.json({ error: registryProblem(error) }, 503);
     }
   });
   // Every other route needs an explicit vault, and the scope the caller last
@@ -642,8 +646,8 @@ export function createApi({ vaultsRoot = "/vaults", expectedKey = apiKey } = {})
     let permitted;
     try {
       permitted = availableVaults(vaultsRoot).find((vault) => vault.id === id);
-    } catch {
-      return c.json({ error: "The vault registry needs attention; re-run install.sh" }, 503);
+    } catch (error) {
+      return c.json({ error: registryProblem(error) }, 503);
     }
     if (!permitted) return c.json({ error: "Vault is unavailable or not permitted" }, 404);
     if (c.req.header("x-obsidian-scope") !== permitted.scopePath) {
@@ -663,6 +667,8 @@ export function createApi({ vaultsRoot = "/vaults", expectedKey = apiKey } = {})
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {
+  // A mistake in VAULTS stops the container here rather than failing every request.
+  if (process.env.VAULTS) registryFromEnv(process.env.VAULTS);
   const app = createApi({ vaultsRoot: process.env.VAULTS_ROOT || "/vaults" });
   console.log(`obsidian-api listening on :${PORT}`);
   serve({ fetch: app.fetch, port: PORT });

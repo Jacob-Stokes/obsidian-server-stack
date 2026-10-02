@@ -140,3 +140,34 @@ test("renaming keeps the id and refuses a name another vault has", async (t) => 
   assert.throws(() => renameVault(root, "notes", "work"), /named/);
   assert.throws(() => renameVault(root, "missing", "X"), /No vault/);
 });
+
+test("VAULTS in the environment sets the vault list in place of the registry file", async (t) => {
+  const { root, app, headers, write } = fixture(t);
+  addVault(root, { id: "from-file", name: "From file", source: "git" });
+  fs.mkdirSync(path.join(root, "main"));
+  fs.mkdirSync(path.join(root, "work"));
+  process.env.VAULTS = " main:official , work:livesync:Work: Notes, nofolder ";
+  t.after(() => delete process.env.VAULTS);
+
+  const inventory = await (await app.request("/vaults", { headers: { "x-api-key": "test-key" } })).json();
+  assert.deepEqual(
+    inventory.vaults.map((v) => [v.id, v.name, v.source]),
+    [
+      ["main", "main", "official"],
+      ["work", "Work: Notes", "livesync"],
+    ],
+    "the file's vaults are not used, and a vault without a folder is left out",
+  );
+  assert.equal((await write("main", "Note.md", "hello")).status, 201);
+  assert.equal(fs.readFileSync(path.join(root, "main", "Note.md"), "utf8"), "hello");
+  assert.equal((await app.request("/files/x.md", { headers: headers("from-file") })).status, 404);
+
+  assert.throws(() => addVault(root, { id: "other", name: "Other", source: "none" }), /set by VAULTS/);
+  assert.equal(readRegistry(root).vaults.length, 3);
+
+  process.env.VAULTS = "Bad Id";
+  assert.throws(() => readRegistry(root), /^Error: VAULTS: the vault list has an invalid entry/);
+  const broken = await app.request("/vaults", { headers: { "x-api-key": "test-key" } });
+  assert.equal(broken.status, 503);
+  assert.match((await broken.json()).error, /^VAULTS:/);
+});

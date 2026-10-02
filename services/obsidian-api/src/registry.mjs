@@ -82,7 +82,28 @@ export function validateRegistry(value) {
   return value;
 }
 
+// VAULTS="id[:source[:name]],..." sets the vault list from the environment
+// instead of the registry file, for a deployment run with plain docker compose
+// rather than obsidian-stack (which manages the file). Each vault's folder is
+// <vaults>/<id>; source defaults to "none", name to the id.
+export function registryFromEnv(spec) {
+  const vaults = spec
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+    .map((entry) => {
+      const [id, source, ...name] = entry.split(":");
+      return { id: id.trim(), name: name.join(":").trim() || id.trim(), source: source?.trim() || "none", aiEnabled: true };
+    });
+  try {
+    return validateRegistry({ schemaVersion: 1, revision: 1, vaults });
+  } catch (error) {
+    throw new Error(`VAULTS: ${error.message.replace("The vault registry", "the vault list")}`);
+  }
+}
+
 export function readRegistry(vaultsRoot, { optional = false } = {}) {
+  if (process.env.VAULTS) return registryFromEnv(process.env.VAULTS);
   let raw;
   try {
     const fd = fs.openSync(registryPath(vaultsRoot), fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
@@ -101,6 +122,7 @@ export function readRegistry(vaultsRoot, { optional = false } = {}) {
 }
 
 function writeRegistry(vaultsRoot, registry) {
+  if (process.env.VAULTS) throw new Error("The vaults are set by VAULTS in the environment; change them there.");
   validateRegistry(registry);
   fs.mkdirSync(vaultsRoot, { recursive: true });
   const tmp = path.join(vaultsRoot, `.registry-${randomUUID()}.tmp`);
