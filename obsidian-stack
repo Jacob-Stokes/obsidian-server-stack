@@ -1553,9 +1553,10 @@ cmd_install() {
   # anything else with the same name belongs to something else.
   local foreign="" n owner project
   for n in "${P}obsidian-api" "${P}obsidian-mcp"; do
-    docker inspect "$n" >/dev/null 2>&1 || continue
-    owner="$(docker inspect -f "{{ index .Config.Labels \"$LABEL.id\" }}" "$n" 2>/dev/null || true)"
-    project="$(docker inspect -f '{{ index .Config.Labels "com.docker.compose.project" }}' "$n" 2>/dev/null || true)"
+    # containers only: plain `docker inspect` also matches an image of that name
+    docker container inspect "$n" >/dev/null 2>&1 || continue
+    owner="$(docker container inspect -f "{{ index .Config.Labels \"$LABEL.id\" }}" "$n" 2>/dev/null || true)"
+    project="$(docker container inspect -f '{{ index .Config.Labels "com.docker.compose.project" }}' "$n" 2>/dev/null || true)"
     [ "$owner" = "$STACK_ID" ] || { [ -z "$owner" ] && [ "$project" = "${P}obsidian-server-stack" ]; } || foreign="$foreign $n"
   done
   if [ -n "$foreign" ]; then
