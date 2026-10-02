@@ -1,0 +1,33 @@
+name: livesync
+
+# End-to-end test of self-hosted LiveSync (scripts/test-livesync.sh): an
+# install, a simulated device joining with a Setup URI, notes both ways, and
+# recovery after a device locks the database. Runs on changes to the
+# LiveSync version, which is how Renovate's pull requests get tested, and to
+# the stack's LiveSync code.
+
+on:
+  pull_request:
+    paths: &livesync
+      - "sync/livesync/**"
+      - "sync/couchdb/**"
+      - "obsidian-stack"
+      - "services/obsidian-api/**"
+      - "scripts/test-livesync.sh"
+      - ".github/workflows/livesync.yml"
+  push:
+    branches: [main]
+    paths: *livesync
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Self-hosted LiveSync, end to end
+        run: sudo ./scripts/test-livesync.sh

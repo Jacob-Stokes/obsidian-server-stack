@@ -46,7 +46,7 @@ export const STACK_VAULTS_TOOL = {
 };
 
 export const StackSyncInput = z.object({
-  action: z.enum(["restart", "logs"]),
+  action: z.enum(["restart", "logs", "resync"]),
   vault_id: VaultId,
   app: z.boolean().optional().describe("The vault's Obsidian app instead of its sync."),
   lines: z.number().int().min(1).max(500).optional().describe("logs: how many recent lines (default 50)."),
@@ -54,7 +54,7 @@ export const StackSyncInput = z.object({
 export const STACK_SYNC_TOOL = {
   name: "obsidian_stack_sync",
   description:
-    "A vault's sync on this server: restart it, or read its recent log lines (useful when notes aren't arriving or leaving). With app: true, the vault's Obsidian app instead.",
+    "A vault's sync on this server: restart it, or read its recent log lines (useful when notes aren't arriving or leaving). With app: true, the vault's Obsidian app instead. resync (LiveSync vaults): the server's copy fetches the vault again from CouchDB, which is the fix when obsidian_stack_status reports a device rebuilt the vault; the server's previous files are kept aside, not deleted.",
   inputSchema: StackSyncInput,
 };
 

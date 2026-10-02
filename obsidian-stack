@@ -208,6 +208,7 @@ Usage: obsidian-stack [--dir PATH] [command]
   vaults              list vaults
   add                 add a vault (scripted: see "Without questions" below)
   rename ID NAME      change a vault's display name (its id stays)
+  resync ID           LiveSync: fetch the vault again (after a device rebuilt it)
   remove [ID]         remove a vault (its files are kept)
   setup-uri [ID] [--url]
                       Setup URI for a self-hosted LiveSync vault's devices
@@ -449,8 +450,12 @@ setup_none() {
 # devices use. The encryption passphrase and the id recovery code are kept in
 # state/<id>/sync.env, so device URIs can be made again at any time.
 
-# Pinned: the generator's Setup URI format has to match the CLI image's.
-GEN_URL=https://raw.githubusercontent.com/vrtmrz/obsidian-livesync/0f6e32dc1b42e85b9d8884d54742706c88036a37/utils/flyio/generate_setupuri.ts
+# The LiveSync release the Setup URI generator comes from: the same one the
+# client in sync/livesync/docker-compose.yml is built from, so the settings
+# it hands out are ones the client supports. Renovate moves both together.
+# renovate: datasource=github-tags depName=vrtmrz/obsidian-livesync
+LIVESYNC_VERSION=1.0.34
+GEN_URL=https://raw.githubusercontent.com/vrtmrz/obsidian-livesync/27a2d9e8c9672fb8df522470712da3cc6e35af11/utils/flyio/generate_setupuri.ts
 GEN_IMAGE=denoland/deno:2.4.5
 
 # gen_uri ID HOSTNAME — runs the generator; sets URI, URI_PASS and RECOVERY
@@ -473,6 +478,17 @@ gen_uri() {
   [ -n "$URI" ] && [ -n "$URI_PASS" ] || { echo "$out" | tail -5 >&2; die "unexpected output from the Setup URI generator"; }
 }
 
+# The LiveSync client image every vault's worker uses, built once from the
+# LiveSync release's source (see sync/livesync/docker-compose.yml).
+livesync_image() { local i; i="$(compose_image sync/livesync/docker-compose.yml livesync)"; echo "${i//\$\{INSTANCE_PREFIX:-\}/$P}"; }
+
+livesync_client() {
+  local id="$1" src="$2" img; img="$(livesync_image)"
+  docker image inspect "$img" >/dev/null 2>&1 && return 0
+  step "Building the LiveSync client ${C_DIM}(${img##*:}, from its source; about a minute)${C_0}" \
+    vc "$id" "$src" --progress plain build livesync || die "couldn't build the LiveSync client"
+}
+
 worker_configured() {
   vc "$1" livesync run --rm -T --entrypoint sh livesync -c 'test -f /data/.livesync/settings.json' </dev/null >/dev/null 2>&1
 }
@@ -487,6 +503,7 @@ import_server_uri() {
   [ -n "$RECOVERY" ] && set_env "$f" LIVESYNC_ID_RECOVERY_CODE "$RECOVERY"
   printf '%s\n' "$URI_PASS" | vc "$id" livesync run --rm -T -e SETUP_URI="$URI" livesync setup >/dev/null 2>&1 \
     || die "couldn't configure the LiveSync worker for '$id'"
+  set_env "$f" LIVESYNC_CLIENT "$(livesync_image)" force
   ok "Configured the server's LiveSync client ${C_DIM}(end-to-end encrypted)${C_0}"
 }
 
@@ -521,6 +538,9 @@ print_device_uri() {
 On each device: install the Self-hosted LiveSync plugin, choose
 "Use the copied setup URI" (or open the URI on the device), and enter the
 passphrase. Encryption and every other setting come from the URI.
+${C_WARN}If it asks, fetch from the server; don't rebuild or overwrite it.${C_0} This
+server already holds the vault, so no device is the first; a rebuild locks
+the server out until: $ME resync $id
 ${C_DIM}It doesn't expire and works on any number of devices. Another: $ME setup-uri $id${C_0}
 EOF
   [[ "$url" == http://* ]] && warn "This address is http://, which Obsidian on phones refuses (desktop only)"
@@ -531,7 +551,7 @@ setup_livesync() {
   local id="$1" f="state/$1/sync.env"
   ensure_couchdb
   create_db "$id"
-  pull "$(compose_image sync/livesync/docker-compose.yml livesync)" "the LiveSync client"
+  livesync_client "$id" livesync
   if worker_configured "$id"; then
     ok "Already configured, reusing existing settings"
   else
@@ -589,7 +609,7 @@ EOF
     fi
     ok "Settings imported from the Setup URI"
   fi
-  pull "$(compose_image sync/livesync/docker-compose.yml livesync)" "the LiveSync client"
+  livesync_client "$id" livesync-existing
   step "Connecting to the existing LiveSync server" vc "$id" livesync-existing --progress plain up -d \
     || die "the LiveSync worker didn't start"
 }
@@ -860,9 +880,17 @@ ensure_all_up() {
     fi
     set_env "state/$id/sync.env" STACK_ID "$STACK_ID"
     case "$src" in
-      livesync) ensure_couchdb; worker_configured "$id" || import_server_uri "$id"
+      livesync) ensure_couchdb; livesync_client "$id" "$src"
+        # A different client version may not load the old one's settings
+        # (found by testing), so start the worker fresh from the vault's own
+        # Setup URI; it then compares the folder with CouchDB as usual.
+        if worker_configured "$id" && [ "$(grep '^LIVESYNC_CLIENT=' "state/$id/sync.env" | cut -d= -f2- | tr -d '"')" != "$(livesync_image)" ]; then
+          vc "$id" "$src" down -v >/dev/null 2>&1 || true
+          info "'$id': new LiveSync client ($(livesync_image | sed 's/.*://')), setting its worker up again"
+        fi
+        worker_configured "$id" || import_server_uri "$id"
         step "Sync for '$id' ${C_DIM}($(source_label "$src"))${C_0}" vc "$id" "$src" --progress plain up -d ;;
-      livesync-existing) ensure_livesync_network
+      livesync-existing) ensure_livesync_network; livesync_client "$id" "$src"
         step "Sync for '$id' ${C_DIM}($(source_label "$src"))${C_0}" vc "$id" "$src" --progress plain up -d ;;
       *) step "Sync for '$id' ${C_DIM}($(source_label "$src"))${C_0}" vc "$id" "$src" --progress plain up -d --build ;;
     esac || warn "Sync for '$id' didn't start; see above"
@@ -1069,6 +1097,97 @@ cmd_app() {
   esac
 }
 
+# --- LiveSync recovery and diagnosis -------------------------------------------
+
+# A plain explanation of why a LiveSync vault's worker isn't syncing, from its
+# state and recent log, or nothing if it's fine.
+sync_problem() {
+  local id="$1" c state logs
+  c="$(ours sync "$id" | head -1)"; [ -n "$c" ] || return 0
+  state="$(docker inspect -f '{{.State.Status}}' "$c" 2>/dev/null || true)"
+  logs="$(docker logs --tail 40 "$c" 2>&1 || true)"
+  # fine: running, and either never restarted by Docker or syncing since
+  if [ "$state" = running ]; then
+    [ "$(docker inspect -f '{{.RestartCount}}' "$c" 2>/dev/null || echo 0)" = 0 ] && ! grep -q 'Error\]' <<< "$(tail -n 8 <<< "$logs")" && return 0
+    tail -n 6 <<< "$logs" | grep -q 'LiveSync active\|NOW TRACKING' && return 0
+  fi
+  case "$logs" in
+    *"locked and this device is not yet accepted"*)
+      echo "A device rebuilt this vault's database, which locks other copies out. Fetch it again: $ME resync $id" ;;
+    *"version is not compatible"*|*"Unsupported remote database generation"*|*"Unknown features are in use"*)
+      echo "Devices use a newer LiveSync than this server's client ($(livesync_image | sed 's/.*://')). Update the stack: $ME update" ;;
+    *"cannot be initialised"*)
+      echo "The LiveSync client couldn't load its settings. Set it up again: $ME resync $id" ;;
+    *"replication failed"*)
+      if remote_locked "$id"; then
+        echo "A device rebuilt this vault's database, which locks other copies out. Fetch it again: $ME resync $id"
+      else
+        echo "Can't sync with CouchDB. Details: $ME logs $id"
+      fi ;;
+    *) [ "$state" = running ] || echo "Its sync isn't running ($state). Details: $ME logs $id" ;;
+  esac
+}
+
+# Self-hosted vaults only (this stack's CouchDB): whether LiveSync's lock
+# record says the database was rebuilt or locked by a device.
+remote_locked() {
+  [ "$(vault_src "$1")" = livesync ] && [ -n "$(ours couchdb | head -1)" ] || return 1
+  docker exec "${P}obsidian-couchdb" curl -sf -u "$(couchdb_env COUCHDB_USER):$(couchdb_env COUCHDB_PASSWORD)" \
+    "http://127.0.0.1:5984/$1/_local/obsydian_livesync_milestone" 2>/dev/null | grep -q '"locked":true'
+}
+
+# resync ID — the server's copy fetches the vault again from CouchDB, as a
+# device does after another device rebuilt it: a fresh local database, the
+# rebuild accepted, everything downloaded. Files the server has are moved
+# aside first, so nothing it had (and the rebuild dropped) comes back.
+cmd_resync() {
+  require_installed
+  local id="${1:-}" src backup ans
+  [ -n "$id" ] || die "usage: $ME resync <vault id>"
+  src="$(vault_src "$id")"
+  case "$src" in
+    livesync|livesync-existing) ;;
+    "") die "no vault '$id'" ;;
+    *) die "'$id' doesn't use LiveSync ($(source_label "$src")); resync is for LiveSync vaults" ;;
+  esac
+  say "Fetching '$id' again"
+  para <<EOF
+For after a device rebuilt this vault (or its sync is stuck): this server's
+copy starts over and downloads the vault from CouchDB, as another device
+would. Its current files are moved to state/$id/before-resync-<time>/ first.
+EOF
+  echo
+  ask "Go ahead? [y/N] " ans confirm
+  case "$ans" in [yY]*) ;; *) info "Nothing changed."; return ;; esac
+
+  livesync_client "$id" "$src"
+  step "Stopping its sync" vc "$id" "$src" stop livesync || true
+  backup="state/$id/before-resync-$(date +%Y%m%d-%H%M%S)"
+  mkdir -p "$backup"
+  find "vaults/$id" -mindepth 1 -maxdepth 1 ! -name '.obsidian' -exec mv {} "$backup/" \;
+  ok "Moved the server's files aside ${C_DIM}($backup)${C_0}"
+  if [ "$src" = livesync ]; then
+    vc "$id" "$src" down -v >/dev/null 2>&1 || true
+    import_server_uri "$id"
+  else
+    # an existing server's settings came from its Setup URI, which isn't
+    # kept: keep them, start the local database over
+    vc "$id" "$src" run --rm -T --entrypoint sh livesync -c 'rm -rf /data/headless-vault-* /data/.livesync/runtime' </dev/null >/dev/null 2>&1
+  fi
+  step "Accepting the rebuilt database" vc "$id" "$src" run --rm -T --entrypoint sh livesync \
+    -c 'export LIVESYNC_DB_PATH=/data; livesync-cli --settings /data/.livesync/settings.json mark-resolved' \
+    || die "couldn't accept the database; details above"
+  step "Starting its sync" vc "$id" "$src" --progress plain up -d || die "its sync didn't start"
+  step "Downloading the vault" until_ok 30 worker_healthy "$id" || warn "Still starting; check: $ME status"
+  ok "'$id' fetched again ${C_DIM}($(find "vaults/$id" -name '*.md' -not -path '*/.*' | wc -l | tr -d ' ') notes)${C_0}"
+}
+
+worker_healthy() {
+  local c; c="$(ours sync "$1" | head -1)"
+  [ -n "$c" ] && [ "$(docker inspect -f '{{.State.Status}}' "$c")" = running ] && sleep 6 &&
+    [ "$(docker inspect -f '{{.State.Status}}' "$c")" = running ] && docker logs --tail 5 "$c" 2>&1 | grep -q 'LiveSync active\|NOW TRACKING'
+}
+
 # --- manager add-on (extras/manager) -------------------------------------------
 #
 # Optional: lets obsidian-mcp manage this install through a fixed list of
@@ -1164,6 +1283,7 @@ vaults_json() {
     printf '{"id":%s,"name":%s,"source":%s,"notes":%s,"sync":' "$(json_str "$id")" "$(json_str "$name")" \
       "$(json_str "$src")" "$(find "vaults/$id" -name '*.md' -not -path '*/.*' 2>/dev/null | wc -l | tr -d ' ')"
     if [ -n "$(sync_dir "$src")" ]; then container_json "$(ours sync "$id" | head -1)"; else printf 'null'; fi
+    printf ',"problem":%s' "$(json_str "$(sync_problem "$id")")"
     if grep -qx "$id" <<< "$apps"; then
       printf ',"app":{"enabled":true,"port":%s,"container":' "$(json_str "$(app_env "$id" APP_PORT)")"
       container_json "$(ours app "$id" | head -1)"; printf '}}'
@@ -1344,6 +1464,11 @@ cmd_status() {
 
   say "Vaults"
   vault_rows counts
+  local v p
+  while IFS=$'\t' read -r v _ _; do
+    [ -n "$v" ] || continue
+    p="$(sync_problem "$v")"; [ -n "$p" ] && warn "$v: $p"
+  done <<< "$(reg list)"
   local a
   for a in $(reg apps); do
     printf '  %-20s %-43s %s\n' "$a" "Obsidian app on localhost:$(app_env "$a" APP_PORT)" "$(dot "$(ours app "$a" | head -1)")"
@@ -1477,7 +1602,7 @@ cmd_uninstall() {
   done
   docker network rm "${P}obsidian-livesync" >/dev/null 2>&1 && ok "Removed network ${P}obsidian-livesync"
   docker volume rm "${P}obsidian-deno-cache" >/dev/null 2>&1 || true
-  docker rmi "${P}obsidian-official-sync:local" "${P}obsidian-git-sync:local" "${P}obsidian-manager:local" >/dev/null 2>&1 || true
+  docker rmi "${P}obsidian-official-sync:local" "${P}obsidian-git-sync:local" "${P}obsidian-manager:local" "$(livesync_image)" >/dev/null 2>&1 || true
 
   for link in /usr/local/bin/*; do
     [ -L "$link" ] && [ "$(readlink -f "$link")" = "$ROOT/obsidian-stack" ] || continue
@@ -1513,7 +1638,7 @@ cmd_licenses() {
   lic() { printf '  %-38s %-33s %s%s%s\n' "$1" "$2" "$C_DIM" "$3" "$C_0"; }
   printf '  %s%-38s %-33s %s%s\n' "$C_DIM" "Component" "Licence" "How it's used" "$C_0"
   lic "obsidian-server-stack (this repo)" "MIT" "the API, MCP, CLI and setup"
-  lic "Self-hosted LiveSync" "MIT" "CouchDB setup adapted; CLI image pulled"
+  lic "Self-hosted LiveSync" "MIT" "CouchDB setup adapted; client built from source"
   lic "Apache CouchDB" "Apache-2.0" "image pulled (self-hosted LiveSync)"
   lic "Deno" "MIT" "image pulled to make Setup URIs"
   lic "obsidian-headless (Obsidian Sync)" "Proprietary, Dynalist Inc." "installed from npm; not included"
@@ -1619,6 +1744,7 @@ case "$cmd" in
   status) cmd_status ;;
   vaults|list) require_installed; if [ -n "$JSON" ]; then vaults_json; else vault_rows; fi ;;
   rename) cmd_rename "$@" ;;
+  resync) cmd_resync "$@" ;;
   manager) cmd_manager "$@" ;;
   add) require_installed; add_vault ;;
   remove|rm) require_installed; remove_vault "${1:-}" ;;

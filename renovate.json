@@ -1,0 +1,38 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "description": "Keeps the stack's LiveSync on the latest release: the client built in sync/livesync/docker-compose.yml and the Setup URI generator pinned in obsidian-stack move together, in one pull request, tested by .github/workflows/livesync.yml. Devices update the LiveSync plugin on their own, and a newer plugin can upgrade a vault's database past what an older client reads.",
+  "extends": ["config:recommended"],
+  "enabledManagers": ["custom.regex"],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "LiveSync client, built from the release's source",
+      "managerFilePatterns": ["/^sync/livesync/docker-compose\\.yml$/"],
+      "matchStrings": [
+        "obsidian-livesync\\.git#(?<currentValue>\\d+\\.\\d+\\.\\d+)",
+        "obsidian-livesync-client:(?<currentValue>\\d+\\.\\d+\\.\\d+)"
+      ],
+      "datasourceTemplate": "github-tags",
+      "depNameTemplate": "vrtmrz/obsidian-livesync"
+    },
+    {
+      "customType": "regex",
+      "description": "LiveSync Setup URI generator, at the same release's commit",
+      "managerFilePatterns": ["/^obsidian-stack$/"],
+      "matchStrings": [
+        "LIVESYNC_VERSION=(?<currentValue>\\d+\\.\\d+\\.\\d+)\\nGEN_URL=https://raw\\.githubusercontent\\.com/vrtmrz/obsidian-livesync/(?<currentDigest>[a-f0-9]{40})/"
+      ],
+      "datasourceTemplate": "github-tags",
+      "depNameTemplate": "vrtmrz/obsidian-livesync"
+    }
+  ],
+  "packageRules": [
+    {
+      "matchDepNames": ["vrtmrz/obsidian-livesync"],
+      "groupName": "LiveSync",
+      "versioning": "semver",
+      "ignoreUnstable": true,
+      "labels": ["livesync"]
+    }
+  ]
+}

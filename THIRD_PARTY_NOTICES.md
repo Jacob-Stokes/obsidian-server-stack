@@ -13,13 +13,14 @@ unchanged.
 
 ## sync/livesync/
 
-Original compose file and entrypoint script (no Dockerfile). The image they
-run,
-[`ghcr.io/vrtmrz/livesync-cli`](https://github.com/vrtmrz/obsidian-livesync/pkgs/container/livesync-cli),
-is the same project's own official headless CLI
-([`src/apps/cli`](https://github.com/vrtmrz/obsidian-livesync/tree/main/src/apps/cli)
-in the same repo, same MIT license), referenced directly rather than
-rebuilt, since its authors already publish it.
+Original compose file and entrypoint script. The client they run is the same
+project's own official headless CLI
+([`src/apps/cli`](https://github.com/vrtmrz/obsidian-livesync/tree/main/src/apps/cli),
+MIT), built at install time from a pinned LiveSync release's source with
+that release's own Dockerfile, rather than pulled from its published images
+([`ghcr.io/vrtmrz/livesync-cli`](https://github.com/vrtmrz/obsidian-livesync/pkgs/container/livesync-cli)),
+which are released less often than the plugin. Nothing from it is included
+in this repository.
 
 `obsidian-stack` makes Setup URIs for self-hosted LiveSync vaults with the
 same project's generator,

@@ -75,6 +75,10 @@ Self-hosted LiveSync vaults share one CouchDB server, with a database per vault.
 
 Devices are set up with a Setup URI, made by the LiveSync project's own generator. Adding the vault prints one, with its passphrase, and `obsidian-stack setup-uri <id>` prints another at any time. The URIs don't expire, any number of devices can use the same one, and every URI for a vault carries the same encryption passphrase and settings, so a device added months later joins the same vault. On each device: install the plugin, choose "Use the copied setup URI" (or open the URI on the device), and enter the passphrase. Devices sync every 60 seconds by default; switching the plugin's sync mode to LiveSync makes it real time. The server's own copy always runs in LiveSync mode, so MCP writes reach CouchDB within seconds.
 
+When a device's plugin asks, it should **fetch from the server**, not rebuild or overwrite it: the server's copy has already set the vault up, so no device is ever the first. A rebuild locks the server's copy out; `obsidian-stack status` then says so, and `obsidian-stack resync <id>` fetches the vault again (the server's previous files are kept aside).
+
+**Versions.** Devices update the LiveSync plugin on their own, and a newer plugin can upgrade a vault's database to a format an older client can't read. So the server's client is built from the same LiveSync release's source, not from LiveSync's published images, which can trail the plugin by weeks. [Renovate](https://docs.renovatebot.com) opens a pull request for each new LiveSync release, moving the client and the Setup URI generator together, and [`scripts/test-livesync.sh`](scripts/test-livesync.sh) tests it in CI: a device joins with a Setup URI, notes sync both ways, and `resync` recovers a locked vault. `obsidian-stack update` brings a merged bump to an install.
+
 ### Phones and HTTPS
 
 Obsidian on iOS and Android only connects to servers over `https://`. Both operating systems block plain `http://` from the app, and the block applies to every network, including a Tailscale tailnet or a home Wi-Fi network. Obsidian desktop accepts `http://`.
@@ -101,6 +105,7 @@ To give CouchDB an HTTPS address, `sync/couchdb` has optional profiles for [Tail
 | `obsidian-stack vaults` | List vaults |
 | `obsidian-stack add` / `remove [id]` | Add a vault, or remove one (its files are kept) |
 | `obsidian-stack app enable\|disable <id>` | The optional Obsidian app for a vault (below) |
+| `obsidian-stack resync <id>` | Self-hosted LiveSync: fetch the vault again, after a device rebuilt it |
 | `obsidian-stack setup-uri <id> [--url]` | Setup URI for a self-hosted LiveSync vault's devices; `--url` changes the address they connect to |
 | `obsidian-stack logs <id\|api\|mcp\|couchdb> [-f]` | Logs for a vault's sync or a core container |
 | `obsidian-stack restart <id\|api\|mcp\|couchdb\|all>` | Restart one part, or everything |
@@ -149,7 +154,7 @@ Each vault gets its own app container rather than sharing one. Obsidian can open
 |---|---|
 | `obsidian_stack_status` | The core containers and every vault: sync source and state, note count, Obsidian app |
 | `obsidian_stack_vaults` | Add a vault (self-hosted LiveSync, Official Sync, git or none), rename one, or remove one (its notes are kept) |
-| `obsidian_stack_sync` | Restart a vault's sync, or read its recent logs |
+| `obsidian_stack_sync` | Restart a vault's sync, read its recent logs, or fetch a LiveSync vault again after a device rebuilt it |
 | `obsidian_stack_app` | Turn the Obsidian app on or off for a vault |
 | `obsidian_stack_setup_uri` | A Setup URI and passphrase for a self-hosted LiveSync vault's devices |
 

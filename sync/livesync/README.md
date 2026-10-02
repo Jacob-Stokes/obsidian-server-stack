@@ -23,3 +23,7 @@ printf '%s\n' "$PASSPHRASE" | docker compose -p obsidian-<id> --project-director
 ```
 
 After importing, the worker switches its own copy to LiveSync mode (continuous replication) so changes reach the vault folder within seconds; other devices keep whatever sync mode they use. The decoded settings, including any CouchDB password and encryption passphrase, are kept in the worker's `livesync-db` Docker volume; `down -v` deletes them.
+
+## Version
+
+The client is built from a pinned LiveSync release's source (`build:` in `docker-compose.yml`), at the same release as the Setup URI generator in `obsidian-stack`, so the server can read whatever database format that release's plugin writes. Renovate (`renovate.json`) proposes each new release; `scripts/test-livesync.sh` tests it. After an update the worker is set up again from the vault's own Setup URI, because a newer client may not load an older one's settings.

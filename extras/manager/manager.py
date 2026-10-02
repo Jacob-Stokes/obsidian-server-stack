@@ -151,12 +151,16 @@ def sync(body):
     if action == "restart":
         run("restart", target, timeout=300)
         return {"restarted": target}
+    if action == "resync":
+        out = run("resync", vid)
+        return {"resynced": vault_entry(vid), "output": tail(out, 6),
+                "note": "The server's previous files are kept in state/<id>/before-resync-<time>/."}
     if action == "logs":
         lines = body.get("lines", 50)
         if not isinstance(lines, int) or not 1 <= lines <= 500:
             raise Refused("lines must be 1-500")
         return {"target": target, "logs": run("logs", target, "--tail", str(lines), timeout=60)}
-    raise Refused("action must be restart or logs")
+    raise Refused("action must be restart, logs or resync")
 
 
 def app(body):
