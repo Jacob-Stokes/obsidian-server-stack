@@ -1,7 +1,9 @@
 # Shared CouchDB for the Self-hosted LiveSync plugin. One server, one database
 # per vault: each vault that uses self-hosted LiveSync gets its own database
 # here and its own worker (sync/livesync) that mirrors it into real files.
-# install.sh starts this once, the first time a vault needs it.
+# obsidian-stack includes it in vaults.compose.yml (with sync/couchdb/.env for
+# its settings) once a vault needs it, so it's part of the install's compose
+# project. Its data is in state/couchdb/, in the install folder.
 #
 # couchdb/couchdb-init/caddy/tailscale/cloudflared are vendored from
 # https://github.com/vrtmrz/obsidian-livesync (MIT, docker/ folder), paths
@@ -12,6 +14,8 @@
 #   --profile caddy        + Caddy reverse proxy, auto TLS via Let's Encrypt
 #   --profile tailscale    + Tailscale sidecar, HTTPS via *.ts.net
 #   --profile cloudflare   + cloudflared tunnel
+# Run from the install folder (docker compose --profile caddy up -d), or set
+# COMPOSE_PROFILES=caddy in its .env so every `docker compose up` includes it.
 
 name: ${INSTANCE_PREFIX:-}obsidian-couchdb
 
@@ -27,7 +31,7 @@ services:
       COUCHDB_USER: ${COUCHDB_USER:?Set COUCHDB_USER in .env}
       COUCHDB_PASSWORD: ${COUCHDB_PASSWORD:?Set COUCHDB_PASSWORD in .env}
     volumes:
-      - couchdb-data:/opt/couchdb/data
+      - ../../state/couchdb/data:/opt/couchdb/data
       # Mount to /opt/couchdb/etc/local.ini (NOT local.d/). Do NOT add :ro —
       # the CouchDB entrypoint chmods this file at startup and crashes on a
       # read-only mount. It's only read at startup; runtime changes go via
@@ -88,8 +92,8 @@ services:
       - "443:443"
     volumes:
       - ./config/Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy-data:/data
-      - caddy-config:/config
+      - ../../state/couchdb/caddy-data:/data
+      - ../../state/couchdb/caddy-config:/config
     networks:
       - livesync
 
@@ -110,7 +114,7 @@ services:
       TS_USERSPACE: "false"
       TS_ACCEPT_DNS: "false"
     volumes:
-      - tailscale-state:/var/lib/tailscale
+      - ../../state/couchdb/tailscale:/var/lib/tailscale
       - ./config/ts-serve.json:/config/serve.json:ro
       - /dev/net/tun:/dev/net/tun
     cap_add:
@@ -138,14 +142,7 @@ services:
     networks:
       - livesync
 
-volumes:
-  couchdb-data:
-  caddy-data:
-  caddy-config:
-  tailscale-state:
-
-# Shared with every vault's LiveSync worker (separate compose projects), so
-# it's created by install.sh rather than owned by this project.
+# Shared with every vault's LiveSync worker; created by obsidian-stack.
 networks:
   livesync:
     name: ${INSTANCE_PREFIX:-}obsidian-livesync

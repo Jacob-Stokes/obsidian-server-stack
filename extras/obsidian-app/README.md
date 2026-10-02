@@ -4,12 +4,7 @@ The full Obsidian desktop app for one vault, in a browser tab, plus a small serv
 
 ## Setup
 
-`obsidian-stack app enable <id>` handles it: it writes `state/<id>/app.env` (port, login, shared token), pre-writes Obsidian's settings so it opens the vault with the CLI on, starts the container and offers to turn off restricted mode. Each vault's app is its own compose project, `obsidian-<id>-app`:
-
-```bash
-docker compose -p obsidian-<id>-app --project-directory extras/obsidian-app \
-  -f extras/obsidian-app/docker-compose.yml --env-file state/<id>/app.env up -d
-```
+`obsidian-stack app enable <id>` handles it: it writes `state/<id>/app.env` (port, login, shared token), pre-writes Obsidian's settings so it opens the vault with the CLI on, adds the vault's app to `vaults.compose.yml` (from `vault.yml` here) as the service `<id>-app`, starts it and offers to turn off restricted mode. From the install folder: `docker compose up -d <id>-app`.
 
 ## How it fits together
 

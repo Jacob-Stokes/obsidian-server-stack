@@ -22,11 +22,11 @@ Obsidian on iOS and Android refuses `http://` addresses on every network, includ
 
 | Profile | Needs | Start with |
 |---|---|---|
-| `caddy` | A domain pointing at the server; automatic TLS | `docker compose --profile caddy up -d` |
-| `tailscale` | A Tailscale auth key; no domain required | `docker compose --profile tailscale up -d` |
-| `cloudflare` | A Cloudflare Tunnel token | `docker compose --profile cloudflare up -d` |
+| `caddy` | A domain pointing at the server; automatic TLS | `COMPOSE_PROFILES=caddy` in the install's `.env` |
+| `tailscale` | A Tailscale auth key; no domain required | `COMPOSE_PROFILES=tailscale` in the install's `.env` |
+| `cloudflare` | A Cloudflare Tunnel token | `COMPOSE_PROFILES=cloudflare` in the install's `.env` |
 
-Each profile's settings are in `.env.example`. Once one is running, `obsidian-stack setup-uri <id> --url` sets the HTTPS address and prints a new Setup URI for each vault.
+Each profile's settings are in this folder's `.env` (see `.env.example`). Set `COMPOSE_PROFILES` in the install's own `.env`, then run `docker compose up -d` in the install folder. Once one is running, `obsidian-stack setup-uri <id> --url` sets the HTTPS address and prints a new Setup URI for each vault.
 
 ## Removing
 

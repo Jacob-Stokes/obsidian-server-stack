@@ -430,10 +430,134 @@ source_label() {
   esac
 }
 
-vc() {
-  local id="$1" dir; dir="$(sync_dir "$2")"; shift 2
-  docker compose -p "${P}obsidian-${id}" --project-directory "sync/$dir" \
-    -f "sync/$dir/docker-compose.yml" --env-file "state/$id/sync.env" "$@"
+# --- the install's compose files ----------------------------------------------
+#
+# docker-compose.yml (the core) includes vaults.compose.yml, which this script
+# writes from the vault registry: each vault's sync services and Obsidian app,
+# CouchDB once a vault needs it, and the manager while it's on. So one compose
+# project covers the whole install, and `docker compose ps`, `up` and `down`
+# in this folder see all of it. The services come from templates
+# (sync/*/vault.yml, extras/obsidian-app/vault.yml, extras/manager/service.yml),
+# filled in with the vault's id; secrets stay in state/<id>/*.env and .env.
+
+# A vault being set up: in the compose file (its setup runs its services)
+# but not yet in the registry, so MCP clients don't see it half-made.
+PENDING_ID="" PENDING_SRC=""
+
+dc() {
+  [ -f vaults.compose.yml ] || printf 'services: {}\n' > vaults.compose.yml
+  docker compose "$@"
+}
+
+# render TEMPLATE ID [PORT] — a template's services for one vault
+render() {
+  sed -e '/^##/d' -e "s/@ID@/$2/g" -e "s/@P@/$P/g" -e "s/@STACK_ID@/$STACK_ID/g" \
+    -e "s|@ROOT@|$ROOT|g" -e "s/@PORT@/${3:-}/g" "$1"
+}
+
+vault_template() {
+  case "$1" in
+    livesync|livesync-existing) echo sync/livesync/vault.yml ;;
+    official) echo sync/official-obsidian-sync/vault.yml ;;
+    git) echo sync/git-sync/vault.yml ;;
+  esac
+}
+
+# The image a template's services use (with this install's prefix)
+template_image() { awk '/^ *image:/ {print $2; exit}' "$1" | sed "s/@P@/$P/g"; }
+
+write_compose() {
+  local list apps id src name tpl services="" livesync="" couch="" tmp
+  list="$(reg list)"
+  if [ -n "$PENDING_ID" ] && ! cut -f1 <<< "$list" | grep -qx "$PENDING_ID"; then
+    list="$list"$'\n'"$PENDING_ID"$'\t'"$PENDING_SRC"$'\t'
+  fi
+  apps="$(reg apps)"
+  while IFS=$'\t' read -r id src name; do
+    tpl="$(vault_template "$src")"
+    [ -n "$id" ] && [ -n "$tpl" ] && [ -f "state/$id/sync.env" ] || continue
+    services+="  # $id: $(source_label "$src")"$'\n'"$(render "$tpl" "$id")"$'\n'
+    case "$src" in livesync) livesync=1; couch=1 ;; livesync-existing) livesync=1 ;; esac
+  done <<< "$list"
+  for id in $apps; do
+    [ -f "state/$id/app.env" ] || continue
+    app_runtime_env "$id"
+    services+="  # $id: the Obsidian app"$'\n'"$(render extras/obsidian-app/vault.yml "$id" "$(app_env "$id" APP_PORT)")"$'\n'
+  done
+  manager_on && services+="  # the manager add-on"$'\n'"$(render extras/manager/service.yml "")"$'\n'
+  [ -n "$couch" ] && [ -n "$(couchdb_env COUCHDB_PASSWORD 2>/dev/null)" ] || couch=""
+  tmp="$(mktemp)"
+  {
+    cat <<'HEAD'
+# Written by obsidian-stack from vaults/.registry.json and included by
+# docker-compose.yml: every vault's services. It's rewritten whenever vaults
+# change, so change them with obsidian-stack (add, remove, app, manager)
+# rather than here. Secrets aren't in it: they're in state/<id>/*.env and .env.
+HEAD
+    [ -n "$couch" ] && printf '\ninclude:\n  - path: sync/couchdb/docker-compose.yml\n    project_directory: sync/couchdb\n    env_file: sync/couchdb/.env\n'
+    if [ -n "$services" ]; then printf '\nservices:\n%s' "$services"; else printf '\nservices: {}\n'; fi
+    # obsidian-net comes from docker-compose.yml, and livesync from CouchDB's
+    # file when it's included: declaring one twice is an error before Compose 5
+    if [ -n "$livesync" ] && [ -z "$couch" ]; then
+      printf '\nnetworks:\n  livesync:\n    name: %sobsidian-livesync\n    external: true\n' "$P"
+    fi
+  } > "$tmp"
+  cat "$tmp" > vaults.compose.yml && rm -f "$tmp"
+  [ -z "$livesync" ] || ensure_livesync_network
+}
+
+# Stop and remove a vault's sync containers; with "fresh", its LiveSync
+# client's local database too, so the client starts over.
+sync_rm() {
+  local svcs; svcs="$(dc config --services 2>/dev/null | grep -xE "$1-sync(-init)?" || true)"
+  # shellcheck disable=SC2086
+  [ -z "$svcs" ] || dc rm -sf $svcs >/dev/null 2>&1 || true
+  [ "${2:-}" != fresh ] || rm -rf "state/$1/livesync-db"
+}
+
+# Installs from before vaults.compose.yml ran each vault's sync, app, CouchDB
+# and the manager as separate compose projects, with LiveSync's and CouchDB's
+# data in Docker volumes. This moves them into the one project: the old
+# containers go (the new ones get the same names), and each volume's data is
+# copied into state/ and the volume removed. Notes and settings don't move.
+migrate_layout() {
+  local main="${P}obsidian-server-stack" c project old=() id vols=() v
+  for c in $(docker ps -a --filter "label=$LABEL.id=$STACK_ID" --format '{{.Names}}'); do
+    project="$(docker inspect -f '{{ index .Config.Labels "com.docker.compose.project" }}' "$c" 2>/dev/null || true)"
+    [ -n "$project" ] && [ "$project" != "$main" ] && old+=("$c")
+  done
+  for id in $(reg list | cut -f1); do vols+=("${P}obsidian-${id}_livesync-db:state/$id/livesync-db"); done
+  vols+=("${P}obsidian-couchdb_couchdb-data:state/couchdb/data" "${P}obsidian-couchdb_caddy-data:state/couchdb/caddy-data"
+         "${P}obsidian-couchdb_caddy-config:state/couchdb/caddy-config" "${P}obsidian-couchdb_tailscale-state:state/couchdb/tailscale")
+  local any=""
+  for v in "${vols[@]}"; do docker volume inspect "${v%%:*}" >/dev/null 2>&1 && any=1; done
+  [ "${#old[@]}" -gt 0 ] || [ -n "$any" ] || return 0
+  say "Moving to one compose project"
+  info "Each vault's sync now runs in this folder's compose project (vaults.compose.yml),"
+  info "with its data in state/. Notes and settings stay where they are."
+  [ "${#old[@]}" -eq 0 ] || step "Stopping the old containers ${C_DIM}(${#old[@]})${C_0}" docker rm -f "${old[@]}" \
+    || die "couldn't stop the old containers"
+  for v in "${vols[@]}"; do move_volume "${v%%:*}" "${v#*:}"; done
+  docker volume rm "${P}obsidian-deno-cache" >/dev/null 2>&1 || true   # a cache; rebuilt in state/
+  # CouchDB's optional profiles were set in its own .env; compose reads them
+  # from this folder's .env now
+  local prof; prof="$(couchdb_env COMPOSE_PROFILES 2>/dev/null || true)"
+  [ -z "$prof" ] || [ -n "$(grep '^COMPOSE_PROFILES=' .env | cut -d= -f2- | tr -d '"')" ] || {
+    set_env .env COMPOSE_PROFILES "$prof"; ok "CouchDB's profiles ($prof) are now set in .env"; }
+}
+
+# move_volume VOLUME DIR — copy a Docker volume's data into DIR (in this
+# folder), then remove the volume; left alone if DIR already has data
+move_volume() {
+  docker volume inspect "$1" >/dev/null 2>&1 || return 0
+  mkdir -p "$2"
+  if [ -n "$(ls -A "$2" 2>/dev/null)" ]; then warn "$2 isn't empty, so the volume $1 was left as it is"; return 0; fi
+  if docker run --rm -u 0 -v "$1:/from:ro" -v "$ROOT/$2:/to" --entrypoint sh "${P}obsidian-api:local" -c 'cp -a /from/. /to/' </dev/null; then
+    docker volume rm "$1" >/dev/null 2>&1 || true
+    ok "Moved the volume $1 to $2"
+  else
+    die "couldn't copy the volume $1 to $2; nothing was removed"
+  fi
 }
 
 new_state() {
@@ -474,8 +598,13 @@ ensure_couchdb() {
     fi
   )
   ensure_livesync_network
+  mkdir -p state/couchdb/data
+  write_compose
   pull "$(compose_image sync/couchdb/docker-compose.yml couchdb)" "CouchDB"
-  step "Starting CouchDB" sh -c 'cd sync/couchdb && docker compose --progress plain up -d' \
+  # plus any optional profile (caddy, tailscale, cloudflare) set in .env
+  # shellcheck disable=SC2046
+  step "Starting CouchDB" dc --progress plain up -d couchdb couchdb-init \
+    $(dc config --services 2>/dev/null | grep -xE 'caddy|tailscale|cloudflared' || true) \
     || die "CouchDB didn't start"
   # couchdb-init turns on auth and CORS; wait for it too, so a device can't
   # connect to a half-configured server.
@@ -518,7 +647,7 @@ setup_none() {
 # state/<id>/sync.env, so device URIs can be made again at any time.
 
 # The LiveSync release the Setup URI generator comes from: the same one the
-# client in sync/livesync/docker-compose.yml is built from, so the settings
+# client in sync/livesync/vault.yml is built from, so the settings
 # it hands out are ones the client supports. Renovate moves both together.
 # renovate: datasource=github-tags depName=vrtmrz/obsidian-livesync
 LIVESYNC_VERSION=1.0.34
@@ -527,13 +656,13 @@ GEN_IMAGE=denoland/deno:2.4.5
 
 # gen_uri ID HOSTNAME — runs the generator; sets URI, URI_PASS and RECOVERY
 gen_uri() {
-  local id="$1" host="$2" f="state/$1/sync.env" out vol="${P}obsidian-deno-cache"
-  docker volume inspect "$vol" >/dev/null 2>&1 \
-    || docker volume create --label "$LABEL.id=$STACK_ID" "$vol" >/dev/null
+  local id="$1" host="$2" f="state/$1/sync.env" out
+  # the generator's downloaded code, cached between runs
+  mkdir -p state/deno-cache
   pull "$GEN_IMAGE" "the Setup URI generator (Deno)" >&2
   # shellcheck disable=SC1090
   out="$( ( source "$f"
-    docker run --rm -v "$vol:/deno-dir" -e DENO_DIR=/deno-dir \
+    docker run --rm -u 0 -v "$ROOT/state/deno-cache:/deno-dir" -e DENO_DIR=/deno-dir \
       -e hostname="$host" -e username="$(couchdb_env COUCHDB_USER)" \
       -e password="$(couchdb_env COUCHDB_PASSWORD)" -e database="$id" \
       -e passphrase="${VAULT_ENCRYPT_PASSPHRASE:?no VAULT_ENCRYPT_PASSPHRASE in $f}" -e id_recovery_code="${LIVESYNC_ID_RECOVERY_CODE:-}" \
@@ -546,18 +675,18 @@ gen_uri() {
 }
 
 # The LiveSync client image every vault's worker uses, built once from the
-# LiveSync release's source (see sync/livesync/docker-compose.yml).
-livesync_image() { local i; i="$(compose_image sync/livesync/docker-compose.yml livesync)"; echo "${i//\$\{INSTANCE_PREFIX:-\}/$P}"; }
+# LiveSync release's source (see sync/livesync/vault.yml).
+livesync_image() { template_image sync/livesync/vault.yml; }
 
 livesync_client() {
   local id="$1" src="$2" img; img="$(livesync_image)"
   docker image inspect "$img" >/dev/null 2>&1 && return 0
   step "Building the LiveSync client ${C_DIM}(${img##*:}, from its source; about a minute)${C_0}" \
-    vc "$id" "$src" --progress plain build livesync || die "couldn't build the LiveSync client"
+    dc --progress plain build "$id-sync-init" || die "couldn't build the LiveSync client"
 }
 
 worker_configured() {
-  vc "$1" livesync run --rm -T --entrypoint sh livesync -c 'test -f /data/.livesync/settings.json' </dev/null >/dev/null 2>&1
+  dc run --rm -T --entrypoint sh "$1-sync" -c 'test -f /data/.livesync/settings.json' </dev/null >/dev/null 2>&1
 }
 
 # Configures the server's worker for a self-hosted vault from its own URI.
@@ -568,7 +697,7 @@ import_server_uri() {
     || set_env "$f" VAULT_ENCRYPT_PASSPHRASE "$(openssl rand -base64 24 | tr '+/' '-_' | tr -d '=')"
   gen_uri "$id" "http://${P}obsidian-couchdb:5984"
   [ -n "$RECOVERY" ] && set_env "$f" LIVESYNC_ID_RECOVERY_CODE "$RECOVERY"
-  printf '%s\n' "$URI_PASS" | vc "$id" livesync run --rm -T -e SETUP_URI="$URI" livesync setup >/dev/null 2>&1 \
+  printf '%s\n' "$URI_PASS" | dc run --rm -T -e SETUP_URI="$URI" "$id-sync" setup >/dev/null 2>&1 \
     || die "couldn't configure the LiveSync worker for '$id'"
   set_env "$f" LIVESYNC_CLIENT "$(livesync_image)" force
   ok "Configured the server's LiveSync client ${C_DIM}(end-to-end encrypted)${C_0}"
@@ -624,7 +753,7 @@ setup_livesync() {
   else
     import_server_uri "$id"
   fi
-  step "Starting the LiveSync worker" vc "$id" livesync --progress plain up -d || die "the LiveSync worker didn't start"
+  step "Starting the LiveSync worker" dc --progress plain up -d "$id-sync" || die "the LiveSync worker didn't start"
   print_device_uri "$id" "$(device_url)"
 }
 
@@ -656,7 +785,8 @@ setup_livesync_existing() {
   ensure_livesync_network
   # </dev/null: `docker compose run` otherwise reads stdin and swallows
   # whatever the user types next (found by testing with piped input).
-  if vc "$id" livesync-existing run --rm -T --entrypoint sh livesync -c 'test -f /data/.livesync/settings.json' </dev/null >/dev/null 2>&1; then
+  livesync_client "$id" livesync-existing
+  if worker_configured "$id"; then
     ok "Already connected, reusing existing settings"
   else
     para <<'EOF'
@@ -671,13 +801,12 @@ EOF
     # Used once and not stored: the URI goes in as an env var for this run
     # only, the passphrase on stdin. The CLI keeps the decoded settings in
     # the vault's own data volume.
-    if ! printf '%s\n' "$pass" | vc "$id" livesync-existing run --rm -T -e SETUP_URI="$uri" livesync setup >/dev/null 2>&1; then
+    if ! printf '%s\n' "$pass" | dc run --rm -T -e SETUP_URI="$uri" "$id-sync" setup >/dev/null 2>&1; then
       die "couldn't apply that Setup URI — check the URI and passphrase, then re-run ./install.sh"
     fi
     ok "Settings imported from the Setup URI"
   fi
-  livesync_client "$id" livesync-existing
-  step "Connecting to the existing LiveSync server" vc "$id" livesync-existing --progress plain up -d \
+  step "Connecting to the existing LiveSync server" dc --progress plain up -d "$id-sync" \
     || die "the LiveSync worker didn't start"
 }
 
@@ -687,7 +816,7 @@ setup_official() {
   mkdir -p "$data"
   own -R "$data"
   set_env "$f" DEVICE_NAME "obsidian-server-stack"
-  step "Building the Obsidian Sync client" vc "$id" official --progress plain build \
+  step "Building the Obsidian Sync client" dc --progress plain build "$id-sync" \
     || die "couldn't build the Obsidian Sync client"
 
   # Reuse a login from another Official Sync vault on this server, if any.
@@ -712,7 +841,7 @@ setup_official() {
     say "Sign in to Obsidian"
     info "Your Obsidian account email, password and (if on) 2FA code. Asked by Obsidian's own client."
     echo
-    until vc "$id" official run --rm -it obsidian-sync get-token; do
+    until dc run --rm -it "$id-sync" get-token; do
       echo
       warn "Sign-in didn't work (the error above says why)."
       ask "Try again? [Y/n] " again
@@ -730,7 +859,7 @@ setup_official() {
   # Offer the vaults on the account; fall back to typing the name.
   local remote=()
   while IFS= read -r vn; do [ -n "$vn" ] && remote+=("$vn"); done < <(
-    vc "$id" official run --rm -T obsidian-sync list-vaults </dev/null 2>/dev/null || true)
+    dc run --rm -T "$id-sync" list-vaults </dev/null 2>/dev/null || true)
   vn="${PRESET[official-vault]:-}"
   if [ -n "$vn" ]; then
     if [ "${#remote[@]}" -gt 0 ] && ! printf '%s\n' "${remote[@]}" | grep -qxF "$vn"; then
@@ -762,12 +891,12 @@ setup_official() {
 
   # Link the vault here, not in the long-running container, so a wrong
   # encryption password gets asked again instead of a restart loop.
-  if vc "$id" official run --rm -T obsidian-sync is-configured </dev/null >/dev/null 2>&1; then
+  if dc run --rm -T "$id-sync" is-configured </dev/null >/dev/null 2>&1; then
     ok "Sync for '$vn' is already set up, reusing it"
   else
     ask_secret "  End-to-end encryption password (blank if you didn't turn that on): " vp OBSIDIAN_VAULT_PASSWORD
     # Passed by name (-e VAULT_PASSWORD), so it never shows up in `ps`.
-    until out=$(VAULT_PASSWORD="$vp" vc "$id" official run --rm -T -e VAULT_PASSWORD obsidian-sync setup </dev/null 2>&1); do
+    until out=$(VAULT_PASSWORD="$vp" dc run --rm -T -e VAULT_PASSWORD "$id-sync" setup </dev/null 2>&1); do
       case "$out" in
         *"Wrong vault key"*)       warn "That encryption password isn't right for '$vn'." ;;
         *"Password not provided"*) warn "'$vn' has end-to-end encryption, so it needs its password." ;;
@@ -787,7 +916,7 @@ setup_official() {
     set_env "$f" VAULT_PASSWORD "$vp" force
     ok "Connected to '$vn'"
   fi
-  step "Starting Obsidian Sync for '$vn'" vc "$id" official --progress plain up -d || die "Obsidian Sync didn't start"
+  step "Starting Obsidian Sync for '$vn'" dc --progress plain up -d "$id-sync" || die "Obsidian Sync didn't start"
 }
 
 setup_git() {
@@ -824,7 +953,7 @@ EOF
   esac
   own -R "$ssh"
   chmod 600 "$ssh/id_ed25519" 2>/dev/null || true
-  step "Building and starting git sync" vc "$id" git --progress plain up -d --build || die "git sync didn't start"
+  step "Building and starting git sync" dc --progress plain up -d --build "$id-sync" || die "git sync didn't start"
   info "Syncs every 60s; devices use the obsidian-git plugin on the same repository."
 }
 
@@ -890,6 +1019,8 @@ EOF
   mkdir -p "vaults/$id"
   own "vaults/$id"
   new_state "$id"
+  PENDING_ID="$id" PENDING_SRC="$src"
+  write_compose
   case "$src" in
     livesync) setup_livesync "$id" ;;
     livesync-existing) setup_livesync_existing "$id" ;;
@@ -900,6 +1031,8 @@ EOF
   # Registered last, so a vault only appears to MCP clients once its sync
   # is set up.
   reg add "$id" "$src" "$name"
+  PENDING_ID="" PENDING_SRC=""
+  write_compose
   ok "Added '$name' ${C_DIM}(files in vaults/$id/)${C_0}"
 
   local app
@@ -926,19 +1059,17 @@ remove_vault() {
   [ -n "$src" ] || { info "No vault with id '$id'."; return; }
   ask "Remove '$id' from the stack? Its files stay in vaults/$id/. [y/N] " confirm confirm
   case "$confirm" in [yY]*) ;; *) info "Kept it."; return ;; esac
-  if [ -n "$(sync_dir "$src")" ] && [ -f "state/$id/sync.env" ]; then
-    vc "$id" "$src" down -v --remove-orphans >/dev/null 2>&1 || true
-  fi
-  if app_on "$id" && [ -f "state/$id/app.env" ]; then
-    ac "$id" down -v --remove-orphans >/dev/null 2>&1 || true
-  fi
+  sync_rm "$id" fresh
+  dc rm -sf "$id-app" >/dev/null 2>&1 || true
   reg remove "$id"
+  write_compose
   ok "Removed '$id'"
   info "Its notes are still in vaults/$id/ and its settings in state/$id/; delete them once sure."
 }
 
 ensure_all_up() {
   local id src name
+  write_compose
   while IFS=$'\t' read -r id src name; do
     [ -n "$id" ] && [ -n "$(sync_dir "$src")" ] || continue
     if [ ! -f "state/$id/sync.env" ]; then
@@ -952,25 +1083,25 @@ ensure_all_up() {
         # (found by testing), so start the worker fresh from the vault's own
         # Setup URI; it then compares the folder with CouchDB as usual.
         if worker_configured "$id" && [ "$(grep '^LIVESYNC_CLIENT=' "state/$id/sync.env" | cut -d= -f2- | tr -d '"')" != "$(livesync_image)" ]; then
-          vc "$id" "$src" down -v >/dev/null 2>&1 || true
+          sync_rm "$id" fresh
           info "'$id': new LiveSync client ($(livesync_image | sed 's/.*://')), setting its worker up again"
         fi
         worker_configured "$id" || import_server_uri "$id"
-        step "Sync for '$id' ${C_DIM}($(source_label "$src"))${C_0}" vc "$id" "$src" --progress plain up -d ;;
+        step "Sync for '$id' ${C_DIM}($(source_label "$src"))${C_0}" dc --progress plain up -d "$id-sync" ;;
       livesync-existing) ensure_livesync_network; livesync_client "$id" "$src"
-        step "Sync for '$id' ${C_DIM}($(source_label "$src"))${C_0}" vc "$id" "$src" --progress plain up -d ;;
-      *) step "Sync for '$id' ${C_DIM}($(source_label "$src"))${C_0}" vc "$id" "$src" --progress plain up -d --build ;;
+        step "Sync for '$id' ${C_DIM}($(source_label "$src"))${C_0}" dc --progress plain up -d "$id-sync" ;;
+      *) step "Sync for '$id' ${C_DIM}($(source_label "$src"))${C_0}" dc --progress plain up -d --build "$id-sync" ;;
     esac || warn "Sync for '$id' didn't start; see above"
   done <<< "$(reg list)"
   for id in $(reg apps); do
     [ -f "state/$id/app.env" ] || continue
     # recreated, not just started: server.py is mounted as a single file, and
     # a git pull replaces it, which a running container wouldn't see
-    step "Obsidian app for '$id'" ac "$id" --progress plain up -d --remove-orphans --force-recreate \
+    step "Obsidian app for '$id'" dc --progress plain up -d --force-recreate "$id-app" \
       || warn "The Obsidian app for '$id' didn't start; see above"
   done
   if manager_on; then
-    step "Manager" mc --progress plain up -d --build --force-recreate || warn "The manager didn't start; see above"
+    step "Manager" dc --progress plain up -d --build --force-recreate manager || warn "The manager didn't start; see above"
   fi
 }
 
@@ -981,10 +1112,12 @@ ensure_all_up() {
 # community plugins via the official Obsidian CLI. The app opens the vault
 # folder and doesn't sync; the vault's own sync keeps the folder current.
 
-ac() {
-  local id="$1"; shift
-  docker compose -p "${P}obsidian-${id}-app" --project-directory extras/obsidian-app \
-    -f extras/obsidian-app/docker-compose.yml --env-file "state/$id/app.env" "$@"
+# The app container reads its login and token under its own names
+app_runtime_env() {
+  local f="state/$1/app.env"
+  set_env "$f" CUSTOM_USER "$(app_env "$1" APP_USER)" force
+  set_env "$f" PASSWORD "$(app_env "$1" APP_PASSWORD)" force
+  set_env "$f" APP_TOKEN "$(app_env "$1" OBSIDIAN_APP_TOKEN)" force
 }
 
 app_on() { reg apps | grep -qx "$1"; }
@@ -1028,7 +1161,7 @@ app_enable() {
   # the core network must have its fixed name (installs from before the
   # add-on get it here); recreating obsidian-mcp also picks up the token
   if [ -n "$token_new" ] || ! docker network inspect "${P}obsidian-internal" >/dev/null 2>&1; then
-    step "Updating obsidian-mcp for the app" docker compose --progress plain up -d \
+    step "Updating obsidian-mcp for the app" dc --progress plain up -d obsidian-api obsidian-mcp \
       || die "couldn't restart the core stack (try: $ME update)"
   fi
 
@@ -1078,7 +1211,7 @@ EOF
     case "$ans" in
       [yY]*)
         set_env "state/$id/sync.env" SYNC_CONFIGS "app,appearance,appearance-data,hotkey,core-plugin,core-plugin-data,community-plugin,community-plugin-data" force
-        step "Restarting Obsidian Sync with settings sync" vc "$id" official --progress plain up -d --build \
+        step "Restarting Obsidian Sync with settings sync" dc --progress plain up -d --build "$id-sync" \
           || die "couldn't restart the sync for '$id'"
         step "Downloading plugins and settings" until_ok 60 settings_synced "$id" || warn "Still syncing; it carries on in the background."
         ok "Settings sync is on ${C_DIM}($(ls "vaults/$id/.obsidian/plugins" 2>/dev/null | wc -l | tr -d ' ') plugins here)${C_0}"
@@ -1093,11 +1226,13 @@ EOF
     esac
   fi
 
-  pull "$(compose_image extras/obsidian-app/docker-compose.yml app)" "the Obsidian app"
-  step "Starting the Obsidian app" ac "$id" --progress plain up -d --remove-orphans || die "the app didn't start"
+  pull "$(template_image extras/obsidian-app/vault.yml)" "the Obsidian app"
+  reg set-app "$id" on
+  write_compose
+  step "Starting the Obsidian app" dc --progress plain up -d "$id-app" \
+    || { reg set-app "$id" off; write_compose; die "the app didn't start"; }
   step "Waiting for Obsidian to open the vault" until_ok 90 app_healthy "$id" \
     || die "Obsidian didn't start — check: $ME logs app:$id"
-  reg set-app "$id" on
 
   if [ "$(app_cli "$id" plugins:restrict 2>/dev/null)" = on ]; then
     para <<'EOF'
@@ -1133,8 +1268,9 @@ app_disable() {
   local id="${1:-}"
   [ -n "$id" ] || { interactive_only "which vault: give its id"; ask "  Vault id: " id; }
   app_on "$id" || { info "The app isn't enabled for '$id'."; return; }
-  [ -f "state/$id/app.env" ] && ac "$id" down -v --remove-orphans >/dev/null 2>&1 || true
+  dc rm -sf "$id-app" >/dev/null 2>&1 || true
   reg set-app "$id" off
+  write_compose
   ok "Stopped the Obsidian app for '$id' ${C_DIM}(its settings stay in state/$id/app/)${C_0}"
 }
 
@@ -1228,23 +1364,23 @@ EOF
   case "$ans" in [yY]*) ;; *) info "Nothing changed."; return ;; esac
 
   livesync_client "$id" "$src"
-  step "Stopping its sync" vc "$id" "$src" stop livesync || true
+  step "Stopping its sync" dc stop "$id-sync" || true
   backup="state/$id/before-resync-$(date +%Y%m%d-%H%M%S)"
   mkdir -p "$backup"
   find "vaults/$id" -mindepth 1 -maxdepth 1 ! -name '.obsidian' -exec mv {} "$backup/" \;
   ok "Moved the server's files aside ${C_DIM}($backup)${C_0}"
   if [ "$src" = livesync ]; then
-    vc "$id" "$src" down -v >/dev/null 2>&1 || true
+    sync_rm "$id" fresh
     import_server_uri "$id"
   else
     # an existing server's settings came from its Setup URI, which isn't
     # kept: keep them, start the local database over
-    vc "$id" "$src" run --rm -T --entrypoint sh livesync -c 'rm -rf /data/headless-vault-* /data/.livesync/runtime' </dev/null >/dev/null 2>&1
+    dc run --rm -T --entrypoint sh "$id-sync" -c 'rm -rf /data/headless-vault-* /data/.livesync/runtime' </dev/null >/dev/null 2>&1
   fi
-  step "Accepting the rebuilt database" vc "$id" "$src" run --rm -T --entrypoint sh livesync \
+  step "Accepting the rebuilt database" dc run --rm -T --entrypoint sh "$id-sync" \
     -c 'export LIVESYNC_DB_PATH=/data; livesync-cli --settings /data/.livesync/settings.json mark-resolved' \
     || die "couldn't accept the database; details above"
-  step "Starting its sync" vc "$id" "$src" --progress plain up -d || die "its sync didn't start"
+  step "Starting its sync" dc --progress plain up -d "$id-sync" || die "its sync didn't start"
   step "Downloading the vault" until_ok 30 worker_healthy "$id" || warn "Still starting; check: $ME status"
   ok "'$id' fetched again ${C_DIM}($(find "vaults/$id" -name '*.md' -not -path '*/.*' | wc -l | tr -d ' ') notes)${C_0}"
 }
@@ -1261,11 +1397,6 @@ worker_healthy() {
 # operations, each an `obsidian-stack ... --yes` run. It holds the Docker
 # socket (root-equivalent), so it's off unless turned on here. See
 # docs/decisions/001-mcp-stack-management.md.
-
-mc() {
-  STACK_DIR="$ROOT" docker compose -p "${P}obsidian-manager" --project-directory extras/manager \
-    -f extras/manager/docker-compose.yml --env-file .env "$@"
-}
 
 manager_on() { [ -n "${OBSIDIAN_MANAGER_TOKEN:-}" ]; }
 
@@ -1298,8 +1429,9 @@ EOF
   # installs from before the app token was made at install time
   [ -n "${OBSIDIAN_APP_TOKEN:-}" ] || set_env .env OBSIDIAN_APP_TOKEN "$(openssl rand -hex 32)" force
   load_env
-  step "Updating obsidian-mcp for the manager" docker compose --progress plain up -d || die "couldn't restart the core stack"
-  step "Building and starting the manager" mc --progress plain up -d --build || die "the manager didn't start"
+  write_compose
+  step "Updating obsidian-mcp for the manager" dc --progress plain up -d obsidian-api obsidian-mcp || die "couldn't restart the core stack"
+  step "Building and starting the manager" dc --progress plain up -d --build manager || die "the manager didn't start"
   step "Checking the manager" until_ok 15 docker exec "${P}obsidian-manager" python3 /manager/manager.py health \
     || die "the manager isn't answering — check: docker logs ${P}obsidian-manager"
   ok "The manager is on. AI tools get the obsidian_stack_* tools on their next connection."
@@ -1307,10 +1439,11 @@ EOF
 
 manager_disable() {
   manager_on || { info "The manager is off."; return; }
-  step "Stopping the manager" mc down --remove-orphans || true
+  step "Stopping the manager" dc rm -sf manager || true
   set_env .env OBSIDIAN_MANAGER_TOKEN "" force
   load_env
-  step "Updating obsidian-mcp" docker compose --progress plain up -d || die "couldn't restart the core stack"
+  write_compose
+  step "Updating obsidian-mcp" dc --progress plain up -d obsidian-api obsidian-mcp || die "couldn't restart the core stack"
   ok "The manager is off; AI tools no longer get the obsidian_stack_* tools."
 }
 
@@ -1387,6 +1520,10 @@ cmd_rename() {
 cmd_install() {
   command -v docker >/dev/null 2>&1 || die "docker is not installed. See https://docs.docker.com/engine/install/"
   docker compose version >/dev/null 2>&1 || die "docker compose (v2 plugin) is required."
+  # include: (docker-compose.yml takes in vaults.compose.yml) needs 2.20+
+  local cv; cv="$(docker compose version --short 2>/dev/null | sed 's/^v//')"
+  printf '%s\n2.20.0\n' "$cv" | sort -V -C 2>/dev/null && [ "$cv" != 2.20.0 ] \
+    && die "docker compose $cv is too old; 2.20 or newer is needed (https://docs.docker.com/compose/install/)"
   command -v openssl >/dev/null 2>&1 || die "openssl is required to generate secrets."
   command -v curl >/dev/null 2>&1 || die "curl is required."
 
@@ -1436,14 +1573,17 @@ $(echo "$foreign" | tr ' ' '\n' | sed '/^$/d;s/^/    /')
   own vaults
 
   say "Core services"
-  step "Building obsidian-api and obsidian-mcp" docker compose --progress plain build \
+  step "Building obsidian-api and obsidian-mcp" dc --progress plain build obsidian-api obsidian-mcp \
     || die "the build failed (see above)"
-  # --remove-orphans cleans up containers from older versions of this stack.
-  step "Starting obsidian-api and obsidian-mcp" docker compose --progress plain up -d --remove-orphans \
+  # --remove-orphans: containers of this project its compose files no longer
+  # list (older versions of the stack; a vault whose setup was interrupted)
+  step "Starting obsidian-api and obsidian-mcp" dc --progress plain up -d --remove-orphans obsidian-api obsidian-mcp \
     || die "they didn't start (see above)"
   # the core network had a generated name before it got a fixed one
   docker network rm "${P}obsidian-server-stack_obsidian-net" >/dev/null 2>&1 || true
   reg init
+  migrate_layout
+  write_compose
   step "Waiting for the MCP server" until_ok 30 curl -sf "http://localhost:${MCP_PORT:-7002}/health" \
     || die "obsidian-mcp didn't come up — check: $ME logs mcp"
 
@@ -1578,25 +1718,21 @@ cmd_restart() {
   local target="${1:-}" src id name
   [ -n "$target" ] || die "usage: $ME restart <vault id | api | mcp | couchdb | all>"
   case "$target" in
-    api) docker compose restart obsidian-api >/dev/null 2>&1; ok "Restarted obsidian-api" ;;
-    mcp) docker compose restart obsidian-mcp >/dev/null 2>&1; ok "Restarted obsidian-mcp" ;;
-    couchdb) ( cd sync/couchdb && docker compose restart couchdb >/dev/null 2>&1 ); ok "Restarted CouchDB" ;;
+    api) dc restart obsidian-api >/dev/null 2>&1; ok "Restarted obsidian-api" ;;
+    mcp) dc restart obsidian-mcp >/dev/null 2>&1; ok "Restarted obsidian-mcp" ;;
+    couchdb) dc restart couchdb >/dev/null 2>&1; ok "Restarted CouchDB" ;;
     app:*)
       app_on "${target#app:}" || die "the app isn't enabled for '${target#app:}'"
-      ac "${target#app:}" restart >/dev/null 2>&1; ok "Restarted the Obsidian app for '${target#app:}'" ;;
+      dc restart "${target#app:}-app" >/dev/null 2>&1; ok "Restarted the Obsidian app for '${target#app:}'" ;;
     all)
-      docker compose restart >/dev/null 2>&1; ok "Restarted obsidian-api and obsidian-mcp"
-      [ -n "$(ours couchdb)" ] && { ( cd sync/couchdb && docker compose restart couchdb >/dev/null 2>&1 ); ok "Restarted CouchDB"; }
-      while IFS=$'\t' read -r id src name; do
-        [ -n "$id" ] && [ -n "$(sync_dir "$src")" ] && [ -f "state/$id/sync.env" ] || continue
-        vc "$id" "$src" restart >/dev/null 2>&1; ok "Restarted sync for '$id'"
-      done <<< "$(reg list)"
+      dc restart >/dev/null 2>&1 || true
+      ok "Restarted everything: $(dc ps --services 2>/dev/null | paste -sd ' ' -)"
       ;;
     *)
       src="$(reg list | awk -F'\t' -v i="$target" '$1==i { print $2 }')"
       [ -n "$src" ] || die "no vault '$target' (vault ids: $(reg list | cut -f1 | tr '\n' ' '))"
       [ -n "$(sync_dir "$src")" ] || { echo "  '$target' has no sync to restart."; return; }
-      vc "$target" "$src" restart >/dev/null 2>&1
+      dc restart "$target-sync" >/dev/null 2>&1
       ok "Restarted sync for '$target'"
       ;;
   esac
@@ -1633,36 +1769,20 @@ cmd_uninstall() {
     case "$ans" in [yY]*) ;; *) info "Nothing removed."; return ;; esac
   fi
 
-  # each vault's sync, including its local sync database volume, and any
-  # Obsidian app add-ons
-  if docker image inspect "${P}obsidian-api:local" >/dev/null 2>&1; then
-    for id in $(reg apps 2>/dev/null); do
-      [ -f "state/$id/app.env" ] && ac "$id" down -v --remove-orphans >/dev/null 2>&1 && ok "Removed the Obsidian app for '$id'"
-    done
-    while IFS=$'\t' read -r id src name; do
-      [ -n "$id" ] || continue
-      if [ -n "$(sync_dir "$src")" ] && [ -f "state/$id/sync.env" ]; then
-        vc "$id" "$src" down -v --remove-orphans >/dev/null 2>&1 && ok "Removed sync for '$id'"
-      fi
-      # volumes `down -v` misses: ones from an older version of a compose file
-      for project in "${P}obsidian-$id" "${P}obsidian-$id-app"; do
-        docker volume ls -q --filter "label=com.docker.compose.project=$project" | xargs -r docker volume rm >/dev/null 2>&1 || true
-      done
-    done <<< "$(reg list 2>/dev/null)"
-  fi
+  # the whole compose project: core, every vault's sync and app, CouchDB,
+  # the manager
+  dc down --remove-orphans >/dev/null 2>&1 && ok "Removed the containers"
 
-  # the shared CouchDB: its databases are the only copy on this server of
-  # the LiveSync vaults, so they're kept unless asked
-  if [ -f sync/couchdb/.env ] && [ -n "$(ours couchdb)$(ours couchdb-init)" ]; then
+  # the shared CouchDB's databases are the only copy on this server of the
+  # LiveSync vaults, so they're kept unless asked
+  if [ -d state/couchdb/data ]; then
     ans=""
     [ -z "$yes" ] && ask "Also delete the CouchDB databases? Devices keep their own copies. [y/N] " ans
     case "$ans" in
-      [yY]*) ( cd sync/couchdb && docker compose down -v >/dev/null 2>&1 ); ok "Removed CouchDB and its databases" ;;
-      *) ( cd sync/couchdb && docker compose down >/dev/null 2>&1 ); ok "Removed CouchDB (databases kept in its Docker volume)" ;;
+      [yY]*) rm -rf state/couchdb; ok "Deleted the CouchDB databases" ;;
+      *) ok "Kept the CouchDB databases (state/couchdb/)" ;;
     esac
   fi
-
-  docker compose down --rmi local --remove-orphans >/dev/null 2>&1 && ok "Removed obsidian-api and obsidian-mcp"
 
   # anything still labelled as ours (e.g. sync for a vault whose settings
   # were deleted by hand)
@@ -1670,8 +1790,10 @@ cmd_uninstall() {
     docker rm -f "$c" >/dev/null && ok "Removed leftover container $c"
   done
   docker network rm "${P}obsidian-livesync" >/dev/null 2>&1 && ok "Removed network ${P}obsidian-livesync"
-  docker volume rm "${P}obsidian-deno-cache" >/dev/null 2>&1 || true
-  docker rmi "${P}obsidian-official-sync:local" "${P}obsidian-git-sync:local" "${P}obsidian-manager:local" "$(livesync_image)" >/dev/null 2>&1 || true
+  docker volume rm "${P}obsidian-deno-cache" >/dev/null 2>&1 || true   # from older versions
+  docker rmi "${P}obsidian-api:local" "${P}obsidian-mcp:local" "${P}obsidian-official-sync:local" "${P}obsidian-git-sync:local" \
+    "${P}obsidian-manager:local" "$(livesync_image)" >/dev/null 2>&1 || true
+  rm -f vaults.compose.yml
 
   for link in /usr/local/bin/*; do
     [ -L "$link" ] && [ "$(readlink -f "$link")" = "$ROOT/obsidian-stack" ] || continue

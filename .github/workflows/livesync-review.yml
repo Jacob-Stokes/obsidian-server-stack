@@ -70,7 +70,7 @@ jobs:
             the version of LiveSync (github.com/vrtmrz/obsidian-livesync) that obsidian-server-stack uses.
             The repository is checked out at the pull request's head.
 
-            The stack builds LiveSync's headless CLI from the release's source (sync/livesync/docker-compose.yml)
+            The stack builds LiveSync's headless CLI from the release's source (sync/livesync/vault.yml)
             and pins LiveSync's Setup URI generator to the same release (LIVESYNC_VERSION and GEN_URL in
             obsidian-stack). Devices run the LiveSync plugin and update it on their own; a newer plugin can
             upgrade a vault's database past what an older server client reads, which is why the stack follows
@@ -84,7 +84,7 @@ jobs:
                (gh release list / gh release view <tag> --repo vrtmrz/obsidian-livesync) and, where notes are
                thin, the commits (gh api repos/vrtmrz/obsidian-livesync/compare/OLD...NEW --jq '.commits[].commit.message').
             3. Check that against what the stack depends on, reading the files:
-               - sync/livesync/entrypoint.sh and docker-compose.yml: CLI commands (setup, daemon), the
+               - sync/livesync/entrypoint.sh and vault.yml: CLI commands (setup, daemon), the
                  LIVESYNC_DB_PATH convention, the settings it overrides after importing a Setup URI
                  (liveSync, periodicReplication, batchSave, syncOnStart), the Dockerfile path src/apps/cli/Dockerfile
                - obsidian-stack: the generator's environment variables (hostname, username, password, database,

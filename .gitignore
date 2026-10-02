@@ -8,3 +8,4 @@ dist/
 vaults/
 state/
 site/
+vaults.compose.yml

@@ -35,12 +35,12 @@ cp .env.example .env
 sed -i 's/^INSTANCE_PREFIX=.*/INSTANCE_PREFIX=test-/; s/^MCP_PORT=.*/MCP_PORT=7102/' .env
 ```
 
-Its containers, networks and volumes get the prefix, and its command is named after it, e.g. `obsidian-stack-test`. If both use self-hosted LiveSync, the second also needs a different `COUCHDB_PORT` in `sync/couchdb/.env`.
+Its containers and networks get the prefix, and its command is named after it, e.g. `obsidian-stack-test`. If both use self-hosted LiveSync, the second also needs a different `COUCHDB_PORT` in `sync/couchdb/.env`.
 
 ## Updating and uninstalling
 
-To update, run `obsidian-stack update`. The `.env`, vaults and sync settings are preserved, and every vault's sync is restarted on the new version.
+To update, run `obsidian-stack update`. The `.env`, vaults and sync settings are preserved, and every vault's sync is restarted on the new version. Installs from before the [single compose project](how-it-works.md#one-compose-project) are moved over on their first update: the old per-vault containers are replaced, and LiveSync's and CouchDB's data is copied out of their Docker volumes into `state/`, with nothing synced again.
 
 To remove one vault, run `obsidian-stack remove <id>`. Its notes stay in `vaults/<id>/` and its settings in `state/<id>/` until deleted by hand.
 
-To uninstall, run `obsidian-stack uninstall`. It removes every container labelled with the install's `STACK_ID`, its network, built images and `obsidian-stack` command, then asks separately whether to delete the CouchDB databases and the notes, settings and `.env`. Both are kept unless chosen; devices keep their own copies either way. `obsidian-stack uninstall --yes` skips the prompts and keeps everything on disk.
+To uninstall, run `obsidian-stack uninstall`. It takes down the compose project and removes its built images and the `obsidian-stack` command, then asks separately whether to delete the CouchDB databases (`state/couchdb/`) and the notes, settings and `.env`. Both are kept unless chosen; devices keep their own copies either way. `obsidian-stack uninstall --yes` skips the prompts and keeps everything on disk.

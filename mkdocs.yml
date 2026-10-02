@@ -51,3 +51,4 @@ nav:
       - Managing from AI tools: ai-management.md
   - Decisions:
       - "001: Managing the stack through the MCP": decisions/001-mcp-stack-management.md
+      - "002: One compose project": decisions/002-one-compose-project.md

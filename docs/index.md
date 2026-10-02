@@ -15,7 +15,8 @@ Both run the same containers in Docker. They differ in what manages them.
 | Setup | `./install.sh` asks a few questions | A compose file and `.env`, written by hand |
 | Adding vaults | `obsidian-stack add`, or from an AI tool ([manager](ai-management.md)) | Editing the compose file |
 | Self-hosted LiveSync, Setup URIs | Built in | By hand |
-| On disk | The repository, with vault settings in `state/` | The compose file and `.env` |
+| What runs it | One compose project: the repository's `docker-compose.yml` plus a `vaults.compose.yml` written for each change | The compose file written by hand |
+| On disk | The install folder: notes, settings and data, nothing in Docker volumes | The compose file, `.env` and its volumes |
 | Suits | Most setups | Servers where everything is a compose file |
 
 ## Sync sources

@@ -1,0 +1,21 @@
+## The manager add-on, for vaults.compose.yml (written by obsidian-stack while
+## the manager is on). It holds the Docker socket and the install folder,
+## mounted at the same path (@ROOT@) so the compose files' relative paths mean
+## the same inside it as on the host. See docs/decisions/001.
+  manager:
+    build: ./extras/manager
+    image: @P@obsidian-manager:local
+    container_name: @P@obsidian-manager
+    labels:
+      obsidian-server-stack.id: "@STACK_ID@"
+      obsidian-server-stack.role: manager
+    restart: unless-stopped
+    environment:
+      MANAGER_TOKEN: ${OBSIDIAN_MANAGER_TOKEN:?}
+      STACK_DIR: @ROOT@
+      OBSIDIAN_MCP_HEALTH_URL: http://@P@obsidian-mcp:7002/health
+    volumes:
+      - @ROOT@:@ROOT@
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - obsidian-net
