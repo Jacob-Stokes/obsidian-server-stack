@@ -8,9 +8,10 @@ if [ "$1" = "get-token" ]; then
   ob login
   TOKEN_FILE="${XDG_CONFIG_HOME}/obsidian-headless/auth_token"
   if [ -f "$TOKEN_FILE" ]; then
+    # Not printed: obsidian-stack reads it from this file (it's a login
+    # secret), at state/<id>/official/config/obsidian-headless/auth_token.
     echo
-    echo "OBSIDIAN_AUTH_TOKEN=$(cat "$TOKEN_FILE")"
-    echo "Put that in .env, then: docker compose up -d"
+    echo "Signed in to Obsidian."
   else
     echo "Couldn't find the token file automatically. Try:" >&2
     echo "  find \$XDG_CONFIG_HOME -name auth_token" >&2

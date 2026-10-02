@@ -18,7 +18,7 @@ vc run --rm -T obsidian-sync list-vaults    # names on the account
 vc up -d
 ```
 
-`state/<id>/sync.env` needs `OBSIDIAN_AUTH_TOKEN` (printed by `get-token`), `VAULT_NAME` (the exact name on the Obsidian Sync account) and, only for end-to-end encrypted vaults, `VAULT_PASSWORD`. The folders `vaults/<id>/` and `state/<id>/official/` must be owned by uid 1000.
+`state/<id>/sync.env` needs `OBSIDIAN_AUTH_TOKEN` (saved by `get-token` in `state/<id>/official/config/obsidian-headless/auth_token`), `VAULT_NAME` (the exact name on the Obsidian Sync account) and, only for end-to-end encrypted vaults, `VAULT_PASSWORD`. The folders `vaults/<id>/` and `state/<id>/official/` must be owned by uid 1000.
 
 Settings sync (`.obsidian`: plugins and their settings, appearance, hotkeys) is off unless `SYNC_CONFIGS` is set in `state/<id>/sync.env`, as a comma-separated list of Obsidian Sync's categories: `app`, `appearance`, `appearance-data`, `hotkey`, `core-plugin`, `core-plugin-data`, `community-plugin`, `community-plugin-data`. It's applied on every start; `none` turns it off. The headless client doesn't notice changes under `.obsidian` while connected (only notes), so with settings sync on, the container checks for changed settings every 5 seconds and reconnects to upload them, about 10 seconds after a change. `obsidian-stack app enable` offers to set it, since it's only useful with the Obsidian app add-on.
 
