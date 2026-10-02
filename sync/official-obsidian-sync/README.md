@@ -6,16 +6,13 @@ The image is built from this folder and installs [`obsidian-headless`](https://w
 
 ## Setup
 
-`obsidian-stack add` automates every step except entering the Obsidian login. The login is reused for further Official Sync vaults on the same server. Each vault's client is its own compose project, `obsidian-<id>`, with its settings in `state/<id>/sync.env` and its login and sync state in `state/<id>/official/`:
+`obsidian-stack add` automates every step except entering the Obsidian login. The login is reused for further Official Sync vaults on the same server. Each vault's client is a service in the install's compose project, `<id>-sync` (written into `vaults.compose.yml` from `vault.yml` here), with its settings in `state/<id>/sync.env` and its login and sync state in `state/<id>/official/`. From the install folder:
 
 ```bash
-vc() { docker compose -p obsidian-<id> --project-directory sync/official-obsidian-sync \
-  -f sync/official-obsidian-sync/docker-compose.yml --env-file state/<id>/sync.env "$@"; }
-
-vc build
-vc run --rm -it obsidian-sync get-token     # interactive Obsidian login
-vc run --rm -T obsidian-sync list-vaults    # names on the account
-vc up -d
+docker compose build <id>-sync
+docker compose run --rm -it <id>-sync get-token    # interactive Obsidian login
+docker compose run --rm -T <id>-sync list-vaults   # names on the account
+docker compose up -d <id>-sync
 ```
 
 `state/<id>/sync.env` needs `OBSIDIAN_AUTH_TOKEN` (saved by `get-token` in `state/<id>/official/config/obsidian-headless/auth_token`), `VAULT_NAME` (the exact name on the Obsidian Sync account) and, only for end-to-end encrypted vaults, `VAULT_PASSWORD`. The folders `vaults/<id>/` and `state/<id>/official/` must be owned by uid 1000.

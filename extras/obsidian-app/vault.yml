@@ -1,0 +1,33 @@
+## One vault's Obsidian app, for vaults.compose.yml (written by obsidian-stack
+## when the app is enabled; @PORT@ is its browser UI port). LinuxServer.io's
+## image runs the desktop app; server.py, started inside it, is what
+## obsidian-mcp talks to. Login, token and limits in state/@ID@/app.env.
+  @ID@-app:
+    image: lscr.io/linuxserver/obsidian:v1.13.7-ls146
+    container_name: @P@obsidian-@ID@-app
+    labels:
+      obsidian-server-stack.id: "@STACK_ID@"
+      obsidian-server-stack.vault: "@ID@"
+      obsidian-server-stack.role: app
+    restart: unless-stopped
+    shm_size: 1gb
+    env_file:
+      - ./state/@ID@/app.env
+    environment:
+      PUID: 1000
+      PGID: 1000
+      TITLE: Obsidian (@ID@)
+    volumes:
+      - ./vaults/@ID@:/vault
+      - ./state/@ID@/app:/config
+      - ./extras/obsidian-app/server.py:/cli/server.py:ro
+      - ./extras/obsidian-app/obsidian-cli.service:/custom-services.d/obsidian-cli:ro
+    ports:
+      - "127.0.0.1:@PORT@:3000"
+    healthcheck:
+      test: ["CMD", "/lsiopy/bin/python3", "/cli/server.py", "health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 90s
+    networks:
+      - obsidian-net

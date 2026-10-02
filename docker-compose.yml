@@ -1,9 +1,16 @@
 name: ${INSTANCE_PREFIX:-}obsidian-server-stack
 
+# Every vault's services (its sync, and the Obsidian app if enabled), CouchDB
+# and the manager add-on, written by obsidian-stack, so `docker compose ps`,
+# `up` and `down` here cover the whole install.
+include:
+  - vaults.compose.yml
+
 services:
   # REST API over the vaults' markdown files. Only reachable inside this
   # compose network — obsidian-mcp is its only client. Each request names a
-  # vault; the list of vaults is vaults/.registry.json, managed by obsidian-stack.
+  # vault; the list of vaults is vaults/.registry.json, managed by obsidian-stack
+  # (or VAULTS, for a deployment written by hand: docs/compose.md).
   obsidian-api:
     build:
       context: ./services/obsidian-api

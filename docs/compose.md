@@ -1,6 +1,6 @@
 # Docker Compose (without the installer)
 
-The stack's services are ordinary compose services, and Docker Compose can build them straight from this repository, so a deployment can be a single hand-written compose file and its `.env`: nothing generated, nothing installed on the host. This suits servers where everything is kept as compose files. The [installer](installer.md) remains the easier way for most setups, and the only one with the `obsidian-stack` command.
+The stack's services are ordinary compose services, and Docker Compose can build them straight from this repository, so a deployment can be a single hand-written compose file and its `.env`: nothing generated, nothing installed on the host. This suits servers where everything is kept as compose files. The [installer](installer.md) produces compose files too (one project, readable with `docker compose`), and writes each vault's services itself; this page is for writing them by hand instead.
 
 ## Quick start
 

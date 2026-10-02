@@ -1,0 +1,43 @@
+## One vault's LiveSync services, for vaults.compose.yml (written by
+## obsidian-stack: @ID@ is the vault id, @P@ the install's prefix, @STACK_ID@
+## its id). The client is built from the LiveSync release's own source, the
+## same release the Setup URI generator in obsidian-stack comes from; Renovate
+## moves both together. Settings and keys in state/@ID@/sync.env; the client's
+## local database in state/@ID@/livesync-db.
+  @ID@-sync-init:
+    build:
+      context: https://github.com/vrtmrz/obsidian-livesync.git#1.0.34
+      dockerfile: src/apps/cli/Dockerfile
+    image: @P@obsidian-livesync-client:1.0.34
+    container_name: @P@obsidian-@ID@-livesync-init
+    labels:
+      obsidian-server-stack.id: "@STACK_ID@"
+      obsidian-server-stack.vault: "@ID@"
+      obsidian-server-stack.role: sync-init
+    restart: on-failure
+    entrypoint: ["sh", "-c", "mkdir -p /vault /data && chown -R 1000:1000 /vault /data"]
+    volumes:
+      - ./vaults/@ID@:/vault
+      - ./state/@ID@/livesync-db:/data
+    network_mode: none
+  @ID@-sync:
+    image: @P@obsidian-livesync-client:1.0.34
+    container_name: @P@obsidian-@ID@-livesync
+    labels:
+      obsidian-server-stack.id: "@STACK_ID@"
+      obsidian-server-stack.vault: "@ID@"
+      obsidian-server-stack.role: sync
+    restart: unless-stopped
+    user: "1000:1000"
+    depends_on:
+      @ID@-sync-init:
+        condition: service_completed_successfully
+    env_file:
+      - ./state/@ID@/sync.env
+    entrypoint: ["/scripts/entrypoint.sh"]
+    volumes:
+      - ./vaults/@ID@:/vault
+      - ./state/@ID@/livesync-db:/data
+      - ./sync/livesync/entrypoint.sh:/scripts/entrypoint.sh:ro
+    networks:
+      - livesync

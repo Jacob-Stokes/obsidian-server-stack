@@ -9,7 +9,7 @@ obsidian-stack manager disable
 
 ## How it works
 
-- **`manager.py`** runs in its own container with the Docker socket and the install folder, at the same path as on the host (`obsidian-stack` creates bind mounts by host path). It listens on port 7320 on the stack's internal network only, with Bearer `OBSIDIAN_MANAGER_TOKEN`.
+- **`manager.py`** runs in its own container, the service `manager` in the install's compose project (written into `vaults.compose.yml` from `service.yml` here while it's on), with the Docker socket and the install folder mounted at the same path as on the host, so the compose files' paths mean the same inside it. It listens on port 7320 on the stack's internal network only, with Bearer `OBSIDIAN_MANAGER_TOKEN`.
 - **Each request becomes one `obsidian-stack ... --yes` run**, one at a time, with every argument checked first: vault ids, names, `http(s)` addresses and git repository URLs against fixed patterns.
 - **`obsidian-mcp`** offers five tools (`obsidian_stack_status`, `obsidian_stack_vaults`, `obsidian_stack_sync`, `obsidian_stack_app`, `obsidian_stack_setup_uri`), listed only while the token is set.
 

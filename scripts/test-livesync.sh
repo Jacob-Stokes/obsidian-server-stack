@@ -52,6 +52,12 @@ CLIENT="$(./obsidian-stack status --json | python3 -c 'import json,sys; print(js
 [ "$CLIENT" = running ] || fail "the vault's worker is running (got: $CLIENT)"
 IMAGE="$(docker inspect -f '{{.Config.Image}}' "${PREFIX}obsidian-notes-livesync")"
 pass "worker running ($IMAGE)"
+services="$(docker compose ps --services | sort | paste -sd ' ' -)"
+for svc in obsidian-api obsidian-mcp couchdb notes-sync; do
+  grep -qw "$svc" <<< "$services" || fail "one compose project runs everything (missing $svc in: $services)"
+done
+[ -z "$(docker volume ls -q | grep "^${PREFIX}obsidian-" || true)" ] || fail "no Docker volumes: data stays in the install folder"
+pass "one compose project: $services"
 
 echo "== a device joins with the Setup URI"
 SETUP="$(./obsidian-stack setup-uri notes --json </dev/null)"

@@ -1,0 +1,18 @@
+## One vault's git sync, for vaults.compose.yml (written by obsidian-stack).
+## Repository and interval in state/@ID@/sync.env; the deploy key in
+## state/@ID@/ssh.
+  @ID@-sync:
+    build: ./sync/git-sync
+    image: @P@obsidian-git-sync:local
+    container_name: @P@obsidian-@ID@-git-sync
+    labels:
+      obsidian-server-stack.id: "@STACK_ID@"
+      obsidian-server-stack.vault: "@ID@"
+      obsidian-server-stack.role: sync
+    restart: unless-stopped
+    env_file:
+      - ./state/@ID@/sync.env
+    volumes:
+      - ./vaults/@ID@:/vault
+      - ./state/@ID@/ssh:/ssh
+    network_mode: bridge

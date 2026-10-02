@@ -21,6 +21,29 @@ Each vault stays in sync with other devices on its own, with its own sync source
 | Git | `obsidian-<id>-git-sync` | [obsidian-git](https://github.com/Vinzent03/obsidian-git) plugin | Free |
 | None | | `vaults/<id>/` is managed manually | Free |
 
+## One compose project
+
+The whole install is one Docker Compose project, in the install folder:
+
+| File | What's in it |
+|---|---|
+| `docker-compose.yml` | The core: `obsidian-api` and `obsidian-mcp`. Part of the repository. |
+| `vaults.compose.yml` | Every vault's services (its sync, and the Obsidian app if enabled), CouchDB once a vault needs it, and the manager while it's on. Written by `obsidian-stack` from the vault list, and included by `docker-compose.yml`. |
+| `.env`, `state/<id>/*.env` | Secrets and settings, read by the containers when they start. Neither compose file contains them. |
+
+So `docker compose ps` in the install folder lists everything, `docker compose logs <id>-sync` shows a vault's sync, and `docker compose down` / `up -d` stop and start the whole install. Vaults are changed with `obsidian-stack` (it rewrites `vaults.compose.yml`), but nothing needs it to run.
+
+All of the install's data is inside the folder, none in Docker volumes:
+
+| Folder | Holds |
+|---|---|
+| `vaults/<id>/` | The notes |
+| `state/<id>/` | Each vault's settings, credentials, sync state and LiveSync's local database |
+| `state/couchdb/` | Self-hosted LiveSync's CouchDB |
+
+Moving the install to another server is `docker compose down`, a copy of the folder, and `docker compose up -d` on the new one. Devices using self-hosted LiveSync connect by address, so they carry on if the new server keeps the same address; otherwise they need new Setup URIs (`obsidian-stack setup-uri <id> --url`).
+
+
 Because credentials are per vault, one install can mix sources and accounts: two vaults on different Obsidian Sync accounts, one on git, another joining a LiveSync server elsewhere, and so on.
 
 Self-hosted LiveSync and HTTPS for phones: [Self-hosted LiveSync](livesync.md).

@@ -12,6 +12,7 @@ on:
       - "sync/livesync/**"
       - "sync/couchdb/**"
       - "obsidian-stack"
+      - "docker-compose.yml"
       - "services/obsidian-api/**"
       - "scripts/test-livesync.sh"
       - ".github/workflows/livesync.yml"

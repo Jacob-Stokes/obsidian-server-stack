@@ -43,7 +43,7 @@ This stack keeps the vault on an always-on server instead. Devices go on syncing
 
 Two ways, running the same containers. Requires Linux with Docker (Compose v2).
 
-**Installer**, for most setups: asks a few questions, adds vaults, makes Setup URIs for devices, and leaves an `obsidian-stack` command for managing it.
+**Installer**, for most setups: asks a few questions, adds vaults and makes Setup URIs for devices. Everything runs as one Docker Compose project in the install folder, managed with the `obsidian-stack` command or plain `docker compose`.
 
 ```bash
 git clone https://github.com/Jacob-Stokes/obsidian-server-stack.git

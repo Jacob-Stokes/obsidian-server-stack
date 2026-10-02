@@ -1,0 +1,20 @@
+## One vault's Official Obsidian Sync client, for vaults.compose.yml (written
+## by obsidian-stack). Our own thin image: obsidian-headless installed from
+## npm at build time (see THIRD_PARTY_NOTICES.md). Login and vault settings in
+## state/@ID@/sync.env; the client's sync state in state/@ID@/official.
+  @ID@-sync:
+    build: ./sync/official-obsidian-sync
+    image: @P@obsidian-official-sync:local
+    container_name: @P@obsidian-@ID@-official-sync
+    labels:
+      obsidian-server-stack.id: "@STACK_ID@"
+      obsidian-server-stack.vault: "@ID@"
+      obsidian-server-stack.role: sync
+    restart: unless-stopped
+    env_file:
+      - ./state/@ID@/sync.env
+    volumes:
+      - ./vaults/@ID@:/vault
+      - ./state/@ID@/official:/data
+    # only needs outbound internet
+    network_mode: bridge

@@ -25,7 +25,7 @@ To make this possible, every question the CLI asks can be answered by an option,
 - Anyone holding the MCP's bearer token or OAuth login can add and remove vaults and start containers through the manager. The MCP should stay private (localhost, a tailnet) or behind OAuth when the manager is on.
 - Setup URIs, their passphrases and git deploy keys are returned to the AI client and appear in its conversation.
 - A bug in the manager's validation could still allow more than intended; keeping it small, opt-in and limited to `obsidian-stack` subcommands limits that, but can't remove it.
-- The manager runs with the install folder mounted at the same path as on the host, because `obsidian-stack` creates bind mounts by host path.
+- The manager runs with the install folder mounted at the same path as on the host, so the compose files' relative paths mean the same inside it.
 
 ## Alternatives considered
 
