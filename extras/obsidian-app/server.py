@@ -385,6 +385,22 @@ def vault_path(body, key="path", suffix=None):
     return path.strip("/")
 
 
+def wait_for_index(seconds=90):
+    """Bases and link checks read Obsidian's metadata index, which is built in
+    the background after the app starts; queried too early they quietly
+    return nothing (found by testing: a base returned 0 rows, then 22). Fixed
+    internal code, like the snippet rescan."""
+    probe = "code=JSON.stringify([app.metadataCache.initialized, app.metadataCache.inProgressTaskCount])"
+    def ready():
+        try:
+            done, pending = json.loads(run("eval", probe).removeprefix("=> ").strip())
+            return done and not pending
+        except (ValueError, TypeError):
+            return False
+    if not wait_for(ready, seconds):
+        raise RuntimeError("Obsidian is still indexing the vault; try again in a minute.")
+
+
 def limit_of(body, default=100, most=1000):
     return max(1, min(int(body.get("limit", default)), most))
 
@@ -404,6 +420,7 @@ def bases(body):
         views = [dict(zip(("name", "type"), l.split("\t"))) for l in run("base:views").splitlines() if l.strip()]
         return {"path": path, "views": views}
     if action == "query":
+        wait_for_index()
         rows = json.loads(run("base:query", f"path={path}", *view_arg, "format=json") or "[]")
         limit = limit_of(body)
         return {"path": path, "view": view, "total": len(rows), "rows": rows[:limit], "truncated": len(rows) > limit}
@@ -422,6 +439,8 @@ def bases(body):
 def vault_health(body):
     check = body.get("check")
     limit = limit_of(body)
+    if check in ("orphans", "deadends", "unresolved"):
+        wait_for_index()
     if check in ("orphans", "deadends"):
         items = [l for l in run(check).splitlines() if l.strip()]
     elif check == "unresolved":
