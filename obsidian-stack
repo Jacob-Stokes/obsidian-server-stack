@@ -9,13 +9,159 @@
 # so other Obsidian containers on the same machine are never touched.
 set -euo pipefail
 
-say()  { printf '\n\033[1m%s\033[0m\n' "$1"; }
-ok()   { printf '  \033[32m✓\033[0m %s\n' "$1"; }
-warn() { printf '  \033[33m!\033[0m %s\n' "$1"; }
-die()  { printf '\033[31mError:\033[0m %s\n' "$1" >&2; exit 1; }
-# read that treats end of input as an empty answer instead of exiting (set -e)
-ask() { read -rp "$1" "$2" || printf -v "$2" '%s' ""; }
-ask_secret() { read -rsp "$1" "$2" || printf -v "$2" '%s' ""; echo; }
+# --- look and feel -------------------------------------------------------------
+#
+# One style throughout: "◆ Heading" sections, "✓ / ! / ✗" status lines,
+# "? question" prompts, everything else indented two spaces. Long-running
+# steps show a spinner with the elapsed time and the step's latest output
+# line; image downloads show a progress bar. Colour and animation only on a
+# terminal (and not with NO_COLOR); piped or logged output stays plain.
+
+if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
+  TTY=1
+  C_ACC=$'\033[38;5;141m' C_B=$'\033[1m' C_DIM=$'\033[2m' C_0=$'\033[0m'
+  C_OK=$'\033[38;5;78m' C_WARN=$'\033[38;5;221m' C_ERR=$'\033[38;5;203m'
+else
+  TTY="" C_ACC="" C_B="" C_DIM="" C_0="" C_OK="" C_WARN="" C_ERR=""
+fi
+case "$(locale charmap 2>/dev/null)" in UTF-8) SPIN=(⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏) ;; *) SPIN=('|' '/' '-' '\') ;; esac
+[ -n "$TTY" ] && trap 'printf "\033[?25h"' EXIT
+
+say()  { printf '\n%s◆%s %s%s%s\n' "$C_ACC" "$C_0" "$C_B" "$1" "$C_0"; }
+ok()   { printf '  %s✓%s %s\n' "$C_OK" "$C_0" "$1"; }
+warn() { printf '  %s!%s %s\n' "$C_WARN" "$C_0" "$1"; }
+fail() { printf '  %s✗%s %s\n' "$C_ERR" "$C_0" "$1"; }
+info() { printf '  %s%s%s\n' "$C_DIM" "$1" "$C_0"; }
+die()  { printf '\n  %s✗ %s%s\n' "$C_ERR" "$1" "$C_0" >&2; exit 1; }
+# para: an explanation from a heredoc, set off by a blank line
+para() { echo; sed "s/^/  /"; }
+
+# ask "Question" VAR — "? Question"; end of input counts as an empty answer
+# rather than exiting under set -e. Leading spaces in the question are
+# ignored, so every prompt lines up the same.
+ask() {
+  local q="${1#"${1%%[![:space:]]*}"}"
+  read -rp "  ${C_ACC}?${C_0} ${q}" "$2" || printf -v "$2" '%s' ""
+}
+ask_secret() {
+  local q="${1#"${1%%[![:space:]]*}"}"
+  read -rsp "  ${C_ACC}?${C_0} ${q}" "$2" || printf -v "$2" '%s' ""
+  echo
+}
+
+elapsed() { local t="$1"; if [ "$t" -ge 60 ]; then printf '%dm %02ds' $((t / 60)) $((t % 60)); else printf '%ds' "$t"; fi; }
+
+# step "Label" COMMAND... — runs COMMAND with its output in the log, showing
+# a spinner, the time so far and the command's latest output line, then
+# "✓ Label (12s)". On failure, the last lines of output and the log's path.
+step() {
+  local label="$1"; shift
+  local start=$SECONDS pid rc=0 i=0 last cols room
+  mkdir -p "$(dirname "$LOG")"
+  printf '\n=== %s  %s\n$ %s\n' "$(date '+%F %T')" "$label" "$*" >> "$LOG"
+  if [ -z "$TTY" ]; then
+    printf '  … %s\n' "$label"
+    "$@" >> "$LOG" 2>&1 </dev/null || rc=$?
+  else
+    "$@" >> "$LOG" 2>&1 </dev/null &
+    pid=$!
+    printf '\033[?25l'
+    while kill -0 "$pid" 2>/dev/null; do
+      cols=$(tput cols 2>/dev/null || echo 80)
+      last="$(tail -n 1 "$LOG" 2>/dev/null | tr -d '\r' | sed 's/\x1b\[[0-9;]*[A-Za-z]//g; s/^[[:space:]]*//')"
+      room=$(( cols - ${#label} - 16 ))
+      [ "$room" -gt 10 ] || last=""
+      [ "${#last}" -gt "$room" ] && last="${last:0:$((room - 1))}…"
+      printf '\r\033[K  %s%s%s %s  %s%s  %s%s' "$C_ACC" "${SPIN[i++ % ${#SPIN[@]}]}" "$C_0" "$label" \
+        "$C_DIM" "$(elapsed $((SECONDS - start)))" "$last" "$C_0"
+      sleep 0.12
+    done
+    wait "$pid" || rc=$?
+    printf '\r\033[K\033[?25h'
+  fi
+  if [ "$rc" -eq 0 ]; then
+    ok "$label ${C_DIM}($(elapsed $((SECONDS - start))))${C_0}"
+  else
+    fail "$label"
+    tail -n 12 "$LOG" | sed "s/^/    ${C_DIM}/; s/\$/${C_0}/"
+    info "Full log: $LOG"
+  fi
+  return "$rc"
+}
+
+# pull IMAGE "Label" — download an image with a progress bar (percent, MB,
+# time), read from Docker's own pull progress. The total comes from the
+# image's manifest when the registry provides it, else from the layers as
+# they're announced. Falls back to a spinner without the Docker socket.
+pull() {
+  local image="$1" label="$2" start=$SECONDS total=0 arch rc=0
+  docker image inspect "$image" >/dev/null 2>&1 && return 0
+  local sock="${DOCKER_HOST:-unix:///var/run/docker.sock}"; sock="${sock#unix://}"
+  if [ -z "$TTY" ] || [ ! -S "$sock" ] || [ ! -w "$sock" ]; then
+    step "Downloading $label" docker pull "$image"; return
+  fi
+  case "$(uname -m)" in x86_64) arch=amd64 ;; aarch64|arm64) arch=arm64 ;; *) arch="" ;; esac
+  printf '  %s%s%s Downloading %s  %schecking size…%s' "$C_ACC" "${SPIN[0]}" "$C_0" "$label" "$C_DIM" "$C_0"
+  if [ -n "$arch" ]; then
+    total="$(timeout 20 docker manifest inspect -v "$image" 2>/dev/null | awk -v a="\"architecture\": \"$arch\"" '
+      index($0, a) {f=1} f && /"layers"/ {l=1} l && /"size"/ {gsub(/[^0-9]/, ""); s += $0} l && /\]/ {print s+0; exit}')"
+  fi
+  printf '\033[?25l'
+  local repo="${image%:*}" tag="${image##*:}"
+  curl -sN --unix-socket "$sock" -X POST "http://localhost/images/create?fromImage=$repo&tag=$tag" 2>>"$LOG" \
+    | tee -a "$LOG" | awk $AWK_LIVE -v total="${total:-0}" -v label="$label" -v acc="$C_ACC" -v dim="$C_DIM" -v reset="$C_0" -v t0="$(date +%s)" '
+      function field(name,   m) { if (match($0, "\"" name "\":[0-9]+")) { m = substr($0, RSTART, RLENGTH); sub(/.*:/, "", m); return m + 0 } return -1 }
+      function draw(   got, all, pct, n, bar, i, el, phase) {
+        got = 0; all = 0
+        for (k in tot) { all += tot[k]; got += (k in cur ? cur[k] : 0) }
+        if (total > all) all = total
+        pct = all > 0 ? int(got * 100 / all) : 0; if (pct > 100) pct = 100
+        n = int(pct * 28 / 100); bar = ""
+        for (i = 0; i < 28; i++) bar = bar (i < n ? "█" : "░")
+        el = systime() - t0; phase = (pct >= 100 || unpacking) ? "unpacking…" : sprintf("%.0f / %.0f MB", got / 1e6, all / 1e6)
+        printf "\r\033[K  %s%s%s Downloading %s  %s%s%s %3d%%  %s%s  %d:%02d%s", acc, spin[f++ % 10], reset, label, acc, bar, reset, pct, dim, phase, int(el / 60), el % 60, reset > "/dev/stderr"
+        fflush("/dev/stderr")
+      }
+      BEGIN { split("⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏", spin, " "); f = 0 }
+      /"error"/ { err = $0; next }
+      {
+        id = ""; if (match($0, /"id":"[^"]+"/)) { id = substr($0, RSTART + 6, RLENGTH - 7) }
+        c = field("current"); t = field("total")
+        if ($0 ~ /"status":"Downloading"/ && t > 0) { tot[id] = t; cur[id] = c }
+        else if ($0 ~ /"status":"(Download complete|Pull complete|Already exists)"/ && id in tot) { cur[id] = tot[id] }
+        else if ($0 ~ /"status":"Extracting"/) { unpacking = 1 }
+        if (++lines % 5 == 0) draw()
+      }
+      END { draw(); printf "\r\033[K" > "/dev/stderr"; fflush("/dev/stderr"); if (err != "") { print err > "/dev/stderr"; exit 1 } }' || rc=$?
+  printf '\033[?25h'
+  if [ "$rc" -eq 0 ] && docker image inspect "$image" >/dev/null 2>&1; then
+    ok "Downloaded $label ${C_DIM}($(awk -v b="${total:-0}" 'BEGIN { if (b > 0) printf "%.1f GB, ", b / 1e9 }')$(elapsed $((SECONDS - start))))${C_0}"
+  else
+    fail "Couldn't download $label ($image)"; info "Details in $LOG"; return 1
+  fi
+}
+
+# mawk reads piped input in large blocks unless told not to, which would hold
+# the progress bar back until the download had finished.
+AWK_LIVE=""; awk -W version 2>/dev/null | grep -qi mawk && AWK_LIVE="-W interactive"
+
+# The logo: a two-tone diamond with sync arrows, as in the README.
+banner() {
+  [ -n "$TTY" ] || { printf '\nobsidian-server-stack\n'; return; }
+  local L1=$'\033[38;5;141m' R1=$'\033[38;5;135m' L2=$'\033[38;5;98m' R2=$'\033[38;5;56m'
+  local W1=$'\033[1;97;48;5;141m' X1=$'\033[1;97;48;5;135m' W2=$'\033[1;97;48;5;98m' X2=$'\033[1;97;48;5;56m'
+  local t="$C_B" d="$C_DIM" o="$C_0"
+  printf '\n'
+  printf '            %s▟%s▙%s\n'                         "$L1" "$R1" "$o"
+  printf '           %s▟█%s█▙%s\n'                        "$L1" "$R1" "$o"
+  printf '          %s▟██%s██▙%s\n'                       "$L1" "$R1" "$o"
+  printf '         %s▟█%s╭─%s→╮%s█▙%s     %sobsidian-server-stack%s\n' "$L1" "$W1" "$X1" "$R1" "$o" "$t" "$o"
+  printf '        %s███%s↑ %s ↓%s███%s    %sObsidian vaults on a server,%s\n' "$L2" "$W2" "$X2" "$R2" "$o" "$d" "$o"
+  printf '         %s▜█%s╰←%s─╯%s█▛%s     %ssynced and reachable over MCP%s\n' "$L2" "$W2" "$X2" "$R2" "$o" "$d" "$o"
+  printf '          %s▜██%s██▛%s\n'                       "$L2" "$R2" "$o"
+  printf '           %s▜█%s█▛%s\n'                        "$L2" "$R2" "$o"
+  printf '            %s▜%s▛%s\n'                         "$L2" "$R2" "$o"
+}
 
 usage() {
   cat <<'EOF'
@@ -58,6 +204,8 @@ DIR="${DIR:-${OBSIDIAN_STACK_DIR:-}}"
   || die "$DIR is not an obsidian-server-stack folder (use --dir)"
 cd "$DIR"
 ROOT="$(pwd)"
+# Output of every step, for when something fails. state/ is private (0700).
+LOG="$ROOT/state/obsidian-stack.log"
 P=""
 STACK_ID=""
 LABEL=obsidian-server-stack
@@ -81,8 +229,7 @@ require_installed() {
 # own [-R] PATH — chown to the containers' uid/gid
 own() {
   if ! chown "${@:1:$#-1}" 1000:1000 "${@: -1}" 2>/dev/null; then
-    echo "  Warning: couldn't chown ${*: -1} to 1000:1000 (not root?). If writes fail"
-    echo "  later, run that chown yourself."
+    warn "Couldn't chown ${*: -1} to 1000:1000 (not root?). If writes fail later, run that chown yourself."
   fi
 }
 
@@ -100,15 +247,15 @@ ours() {
 # "● running (Up 2 hours)" style one-liner for a container
 dot() {
   local c="$1" state status health
-  [ -n "$c" ] || { printf '\033[90m○ not running\033[0m'; return; }
+  [ -n "$c" ] || { printf '%s○ not running%s' "$C_DIM" "$C_0"; return; }
   state="$(docker inspect -f '{{.State.Status}}' "$c" 2>/dev/null || echo missing)"
   status="$(docker ps -a --filter "name=^${c}$" --format '{{.Status}}')"
   health="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{end}}' "$c" 2>/dev/null || true)"
   case "$state:$health" in
-    running:unhealthy) printf '\033[31m● unhealthy\033[0m (%s)' "$status" ;;
-    running:*) printf '\033[32m● running\033[0m (%s)' "$status" ;;
-    restarting:*) printf '\033[31m● restarting\033[0m (%s)' "$status" ;;
-    *) printf '\033[31m● %s\033[0m (%s)' "$state" "$status" ;;
+    running:unhealthy) printf '%s● unhealthy%s %s· %s%s' "$C_ERR" "$C_0" "$C_DIM" "$status" "$C_0" ;;
+    running:*) printf '%s● running%s %s· %s%s' "$C_OK" "$C_0" "$C_DIM" "$status" "$C_0" ;;
+    restarting:*) printf '%s● restarting%s %s· %s%s' "$C_ERR" "$C_0" "$C_DIM" "$status" "$C_0" ;;
+    *) printf '%s● %s%s %s· %s%s' "$C_ERR" "$state" "$C_0" "$C_DIM" "$status" "$C_0" ;;
   esac
 }
 
@@ -133,6 +280,16 @@ set_env() {
     echo "${key}=\"${val}\"" >> "$file"
   fi
 }
+
+# until_ok TRIES COMMAND... — retry every 2s; for use under step
+until_ok() {
+  local n="$1"; shift
+  for _ in $(seq 1 "$n"); do "$@" >/dev/null 2>&1 && return 0; sleep 2; done
+  return 1
+}
+
+# The image a compose file pins for a service, so pull() and compose agree.
+compose_image() { awk -v svc="  $2:" '$0 == svc {f=1} f && /image:/ {print $2; exit}' "$1"; }
 
 sync_dir() {
   case "$1" in
@@ -189,27 +346,24 @@ ensure_couchdb() {
     source .env
     if [ -z "${COUCHDB_PASSWORD:-}" ]; then
       set_env .env COUCHDB_PASSWORD "$(openssl rand -hex 20)"
-      ok "generated the CouchDB password (sync/couchdb/.env)"
+      ok "Generated the CouchDB password ${C_DIM}(sync/couchdb/.env)${C_0}"
     fi
   )
   ensure_livesync_network
-  ( cd sync/couchdb && docker compose up -d )
-  printf '  waiting for CouchDB'
-  for _ in $(seq 1 60); do
-    [ "$(docker inspect -f '{{.State.Health.Status}}' "${P}obsidian-couchdb" 2>/dev/null)" = healthy ] && break
-    printf '.'; sleep 2
-  done
-  # couchdb-init turns on auth and CORS; wait for it so a device can't
+  pull "$(compose_image sync/couchdb/docker-compose.yml couchdb)" "CouchDB"
+  step "Starting CouchDB" sh -c 'cd sync/couchdb && docker compose --progress plain up -d' \
+    || die "CouchDB didn't start"
+  # couchdb-init turns on auth and CORS; wait for it too, so a device can't
   # connect to a half-configured server.
-  for _ in $(seq 1 30); do
-    [ "$(docker inspect -f '{{.State.Status}} {{.State.ExitCode}}' "${P}obsidian-couchdb-init" 2>/dev/null)" = "exited 0" ] && break
-    printf '.'; sleep 2
-  done
-  echo
-  [ "$(docker inspect -f '{{.State.Health.Status}}' "${P}obsidian-couchdb" 2>/dev/null)" = healthy ] \
-    || die "CouchDB didn't come up — check: cd sync/couchdb && docker compose logs"
-  ok "CouchDB is up on port $(grep '^COUCHDB_PORT=' sync/couchdb/.env | cut -d= -f2- | tr -d '"')"
+  step "Waiting for CouchDB to be ready" until_ok 90 couchdb_ready \
+    || die "CouchDB didn't come up — check: $ME logs couchdb"
+  info "CouchDB listens on port $(grep '^COUCHDB_PORT=' sync/couchdb/.env | cut -d= -f2- | tr -d '"')"
   COUCHDB_READY=1
+}
+
+couchdb_ready() {
+  [ "$(docker inspect -f '{{.State.Health.Status}}' "${P}obsidian-couchdb" 2>/dev/null)" = healthy ] &&
+    [ "$(docker inspect -f '{{.State.Status}} {{.State.ExitCode}}' "${P}obsidian-couchdb-init" 2>/dev/null)" = "exited 0" ]
 }
 
 couchdb_env() { grep "^$1=" sync/couchdb/.env | cut -d= -f2- | tr -d '"'; }
@@ -219,14 +373,14 @@ create_db() {
   code="$(docker exec "${P}obsidian-couchdb" curl -s -o /dev/null -w '%{http_code}' \
     -u "$(couchdb_env COUCHDB_USER):$(couchdb_env COUCHDB_PASSWORD)" -X PUT "http://127.0.0.1:5984/$1")"
   case "$code" in
-    201|202) ok "created CouchDB database '$1'" ;;
-    412) ok "CouchDB database '$1' already exists, reusing it" ;;
+    201|202) ok "Created the CouchDB database '$1'" ;;
+    412) ok "Reusing the existing CouchDB database '$1'" ;;
     *) die "couldn't create CouchDB database '$1' (HTTP $code)" ;;
   esac
 }
 
 setup_none() {
-  ok "no sync — put files in vaults/$1/ however you like (rsync, Syncthing, ...)"
+  ok "No sync: put files in vaults/$1/ however you like (rsync, Syncthing…)"
 }
 
 # --- Setup URIs (self-hosted LiveSync) ---------------------------------------
@@ -248,6 +402,7 @@ gen_uri() {
   local id="$1" host="$2" f="state/$1/sync.env" out vol="${P}obsidian-deno-cache"
   docker volume inspect "$vol" >/dev/null 2>&1 \
     || docker volume create --label "$LABEL.id=$STACK_ID" "$vol" >/dev/null
+  pull "$GEN_IMAGE" "the Setup URI generator (Deno)" >&2
   # shellcheck disable=SC1090
   out="$( ( source "$f"
     docker run --rm -v "$vol:/deno-dir" -e DENO_DIR=/deno-dir \
@@ -276,7 +431,7 @@ import_server_uri() {
   [ -n "$RECOVERY" ] && set_env "$f" LIVESYNC_ID_RECOVERY_CODE "$RECOVERY"
   printf '%s\n' "$URI_PASS" | vc "$id" livesync run --rm -T -e SETUP_URI="$URI" livesync setup >/dev/null 2>&1 \
     || die "couldn't configure the LiveSync worker for '$id'"
-  ok "configured the server's worker (end-to-end encrypted)"
+  ok "Configured the server's LiveSync client ${C_DIM}(end-to-end encrypted)${C_0}"
 }
 
 device_url() {
@@ -284,16 +439,15 @@ device_url() {
   cur="$(couchdb_env COUCHDB_DEVICE_URL)"
   if [ -z "$cur" ] || [ -n "${1:-}" ]; then
     [ -n "$cur" ] || cur="http://$(hostname -I 2>/dev/null | awk '{print $1}'):$(couchdb_env COUCHDB_PORT)"
-    cat >&2 <<EOF
-
-  The address devices use to reach CouchDB goes into their Setup URI.
-  Desktop Obsidian accepts http://. Obsidian on iOS and Android only
-  connects over https://, even across Tailscale or a home network, so
-  phones need an HTTPS address: see "Phones and HTTPS" in the README.
-  (It can be changed later with: $ME setup-uri <vault> --url)
-
+    para >&2 <<EOF
+The address devices use to reach CouchDB goes into their Setup URI.
+Desktop Obsidian accepts http://. Obsidian on iOS and Android only
+connects over https://, even across Tailscale or a home network, so
+phones need an HTTPS address: see "Phones and HTTPS" in the README.
+${C_DIM}Change it later with: $ME setup-uri <vault> --url${C_0}
 EOF
-    ask "  Device address [$cur]: " ans
+    echo >&2
+    ask "Device address [$cur]: " ans
     ( cd sync/couchdb && set_env .env COUCHDB_DEVICE_URL "${ans:-$cur}" force )
   fi
   couchdb_env COUCHDB_DEVICE_URL
@@ -303,21 +457,17 @@ EOF
 print_device_uri() {
   local id="$1" url="$2"
   gen_uri "$id" "$url"
-  cat <<EOF
-
-  Setup URI for '$id' (devices connect to $url):
-
-$URI
-
-  Its passphrase:  $URI_PASS
-
-  On each device: install the Self-hosted LiveSync plugin, then use
-  "Use the copied setup URI" (or open the URI on the device) and enter the
-  passphrase. Encryption and every other setting come from the URI. The URI
-  doesn't expire and works on any number of devices; another can be made at
-  any time with: $ME setup-uri $id
+  say "Setup URI for '$id'"
+  info "Devices connect to $url"
+  printf '\n%s\n\n' "$URI"
+  printf '  %sPassphrase%s  %s%s%s\n' "$C_DIM" "$C_0" "$C_B" "$URI_PASS" "$C_0"
+  para <<EOF
+On each device: install the Self-hosted LiveSync plugin, choose
+"Use the copied setup URI" (or open the URI on the device), and enter the
+passphrase. Encryption and every other setting come from the URI.
+${C_DIM}It doesn't expire and works on any number of devices. Another: $ME setup-uri $id${C_0}
 EOF
-  [[ "$url" == http://* ]] && warn "this address is http://, which Obsidian mobile refuses (desktop only)"
+  [[ "$url" == http://* ]] && warn "This address is http://, which Obsidian on phones refuses (desktop only)"
   return 0
 }
 
@@ -325,13 +475,13 @@ setup_livesync() {
   local id="$1" f="state/$1/sync.env"
   ensure_couchdb
   create_db "$id"
+  pull "$(compose_image sync/livesync/docker-compose.yml livesync)" "the LiveSync client"
   if worker_configured "$id"; then
-    ok "already configured, reusing existing settings"
+    ok "Already configured, reusing existing settings"
   else
     import_server_uri "$id"
   fi
-  vc "$id" livesync up -d
-  ok "LiveSync worker is up"
+  step "Starting the LiveSync worker" vc "$id" livesync --progress plain up -d || die "the LiveSync worker didn't start"
   print_device_uri "$id" "$(device_url)"
 }
 
@@ -359,12 +509,14 @@ setup_livesync_existing() {
   # </dev/null: `docker compose run` otherwise reads stdin and swallows
   # whatever the user types next (found by testing with piped input).
   if vc "$id" livesync-existing run --rm -T --entrypoint sh livesync -c 'test -f /data/.livesync/settings.json' </dev/null >/dev/null 2>&1; then
-    ok "already connected, reusing existing settings"
+    ok "Already connected, reusing existing settings"
   else
-    echo "  In Obsidian on a device that already syncs: Settings → Self-hosted LiveSync"
-    echo "  → Setup → Copy the setup URI. It asks you to choose a passphrase for it."
+    para <<'EOF'
+In Obsidian on a device that already syncs: Settings → Self-hosted LiveSync
+→ Setup → Copy the setup URI. It asks you to choose a passphrase for it.
+EOF
     echo
-    ask "  Setup URI: " uri
+    ask "Setup URI: " uri
     [ -n "$uri" ] || die "a Setup URI is required"
     ask_secret "  Its passphrase (hidden): " pass
     [ -n "$pass" ] || die "the Setup URI passphrase is required"
@@ -374,10 +526,11 @@ setup_livesync_existing() {
     if ! printf '%s\n' "$pass" | vc "$id" livesync-existing run --rm -T -e SETUP_URI="$uri" livesync setup >/dev/null 2>&1; then
       die "couldn't apply that Setup URI — check the URI and passphrase, then re-run ./install.sh"
     fi
-    ok "settings imported from the Setup URI"
+    ok "Settings imported from the Setup URI"
   fi
-  vc "$id" livesync-existing up -d
-  ok "connected to your existing LiveSync server"
+  pull "$(compose_image sync/livesync/docker-compose.yml livesync)" "the LiveSync client"
+  step "Connecting to the existing LiveSync server" vc "$id" livesync-existing --progress plain up -d \
+    || die "the LiveSync worker didn't start"
 }
 
 setup_official() {
@@ -386,18 +539,19 @@ setup_official() {
   mkdir -p "$data"
   own -R "$data"
   set_env "$f" DEVICE_NAME "obsidian-server-stack"
-  vc "$id" official build -q
+  step "Building the Obsidian Sync client" vc "$id" official --progress plain build \
+    || die "couldn't build the Obsidian Sync client"
 
   # Reuse a login from another Official Sync vault on this server, if any.
   for other in state/*/official/config/obsidian-headless/auth_token; do
     [ -s "$other" ] && [ "$other" != "$tokfile" ] || continue
-    ask "  Use the Obsidian account already signed in on this server? [Y/n] " again
+    ask "Use the Obsidian account already signed in on this server? [Y/n] " again
     case "$again" in [nN]*) ;; *)
       mkdir -p "$(dirname "$tokfile")"
       cp "$other" "$tokfile"
       own -R "$data"
       token="$(cat "$tokfile")"
-      ok "reusing that login"
+      ok "Reusing that login"
     ;; esac
     break
   done
@@ -406,11 +560,13 @@ setup_official() {
     # The one step that can't be scripted: your Obsidian email, password and
     # MFA code have to be typed by you — a script that could do this for you
     # would need your raw account password sitting in a file.
-    say "Logging in to Obsidian (interactive)"
+    say "Sign in to Obsidian"
+    info "Your Obsidian account email, password and (if on) 2FA code. Asked by Obsidian's own client."
+    echo
     until vc "$id" official run --rm -it obsidian-sync get-token; do
       echo
-      echo "  Login didn't work (the error above says why)."
-      ask "  Try again? [Y/n] " again
+      warn "Sign-in didn't work (the error above says why)."
+      ask "Try again? [Y/n] " again
       case "$again" in [nN]*) die "Obsidian login cancelled" ;; esac
     done
     if [ -s "$tokfile" ]; then
@@ -429,10 +585,12 @@ setup_official() {
   vn=""
   if [ "${#remote[@]}" -eq 1 ]; then
     vn="${remote[0]}"
-    ok "found one vault on your account: $vn"
+    ok "Found one vault on your account: $vn"
   elif [ "${#remote[@]}" -gt 1 ]; then
-    echo "  Vaults on your account:"
-    for i in "${!remote[@]}"; do echo "    $((i + 1))) ${remote[$i]}"; done
+    echo
+    info "Vaults on your account:"
+    for i in "${!remote[@]}"; do printf '    %s%d%s  %s\n' "$C_ACC" "$((i + 1))" "$C_0" "${remote[$i]}"; done
+    echo
     while [ -z "$vn" ]; do
       ask "  Which one? [1-${#remote[@]}] " pick
       if [[ "$pick" =~ ^[0-9]+$ ]] && [ "$pick" -ge 1 ] && [ "$pick" -le "${#remote[@]}" ]; then
@@ -440,7 +598,7 @@ setup_official() {
       fi
     done
   else
-    echo "  Couldn't list the vaults on your account, so type the name instead."
+    warn "Couldn't list the vaults on your account, so type the name instead."
     ask "  Exact vault name on your Obsidian Sync account: " vn
   fi
   [ -n "$vn" ] || die "vault name is required"
@@ -449,37 +607,40 @@ setup_official() {
   # Link the vault here, not in the long-running container, so a wrong
   # encryption password gets asked again instead of a restart loop.
   if vc "$id" official run --rm -T obsidian-sync is-configured </dev/null >/dev/null 2>&1; then
-    ok "sync for '$vn' is already set up, reusing it"
+    ok "Sync for '$vn' is already set up, reusing it"
   else
     ask_secret "  End-to-end encryption password (blank if you didn't turn that on): " vp
     # Passed by name (-e VAULT_PASSWORD), so it never shows up in `ps`.
     until out=$(VAULT_PASSWORD="$vp" vc "$id" official run --rm -T -e VAULT_PASSWORD obsidian-sync setup </dev/null 2>&1); do
       case "$out" in
-        *"Wrong vault key"*)       echo "  That encryption password isn't right for '$vn'." ;;
-        *"Password not provided"*) echo "  '$vn' has end-to-end encryption, so it needs its password." ;;
+        *"Wrong vault key"*)       warn "That encryption password isn't right for '$vn'." ;;
+        *"Password not provided"*) warn "'$vn' has end-to-end encryption, so it needs its password." ;;
         *)
-          echo "$out" | grep -v '^ *at \|Container ' | tail -5
-          echo "  Setting up sync didn't work (see above)."
+          echo "$out" | grep -v '^ *at \|Container ' | tail -5 | sed "s/^/    /"
+          warn "Setting up sync didn't work (see above)."
           ask "  Try again? [Y/n] " again
           case "$again" in [nN]*) die "Obsidian Sync setup cancelled" ;; esac
           continue ;;
       esac
-      echo "  (It's the vault's encryption password, not your Obsidian account password.)"
+      info "It's the vault's encryption password, not your Obsidian account password."
       ask_secret "  Encryption password (blank to stop): " vp
       [ -n "$vp" ] || die "Obsidian Sync setup cancelled"
     done
     set_env "$f" VAULT_PASSWORD "$vp" force
-    ok "connected to '$vn'"
+    ok "Connected to '$vn'"
   fi
-  vc "$id" official up -d
-  ok "Official Obsidian Sync is up"
+  step "Starting Obsidian Sync for '$vn'" vc "$id" official --progress plain up -d || die "Obsidian Sync didn't start"
 }
 
 setup_git() {
   local id="$1" f="state/$1/sync.env" repo
-  echo "  The vault's repo. SSH (e.g. git@github.com:you/vault.git) is recommended —"
-  echo "  a deploy key is generated for you. HTTPS works too, with a token in the URL."
-  ask "  Repo URL: " repo
+  para <<'EOF'
+The vault's git repository. SSH (e.g. git@github.com:you/vault.git) is
+recommended: a deploy key is generated for it. HTTPS works too, with a
+token in the URL.
+EOF
+  echo
+  ask "Repo URL: " repo
   [ -n "$repo" ] || die "a repo URL is required"
   set_env "$f" GIT_REPO_URL "$repo"
   set_env "$f" GIT_BRANCH main
@@ -492,73 +653,65 @@ setup_git() {
       if [ ! -f "$ssh/id_ed25519" ]; then
         command -v ssh-keygen >/dev/null 2>&1 || die "ssh-keygen is required to create a deploy key"
         ssh-keygen -q -t ed25519 -N "" -f "$ssh/id_ed25519" -C "obsidian-server-stack/$id"
-        echo
-        echo "  Add this public key to the repo as a deploy key WITH WRITE ACCESS"
-        echo "  (GitHub: repo → Settings → Deploy keys → Add deploy key → tick 'Allow write access'):"
-        echo
-        echo "    $(cat "$ssh/id_ed25519.pub")"
-        echo
-        ask "  Press Enter once it's added... " _
+        para <<'EOF'
+Add this public key to the repository as a deploy key, with write access
+(GitHub: repo → Settings → Deploy keys → Add deploy key → Allow write access):
+EOF
+        printf '\n    %s%s%s\n\n' "$C_B" "$(cat "$ssh/id_ed25519.pub")" "$C_0"
+        ask "Press Enter once it's added… " _
       fi
       ;;
   esac
   own -R "$ssh"
   chmod 600 "$ssh/id_ed25519" 2>/dev/null || true
-  vc "$id" git up -d --build
-  ok "git sync is up — every 60s; devices use the obsidian-git plugin on the same repo"
+  step "Building and starting git sync" vc "$id" git --progress plain up -d --build || die "git sync didn't start"
+  info "Syncs every 60s; devices use the obsidian-git plugin on the same repository."
 }
 
 
 add_vault() {
   local name id choice src
   say "Add a vault"
-  ask "  Vault name (e.g. Personal, Work): " name
-  [ -n "$name" ] || { echo "  No name entered, nothing added."; return; }
+  echo
+  ask "Vault name (e.g. Personal, Work): " name
+  [ -n "$name" ] || { info "No name entered, nothing added."; return; }
   id="$(reg suggest-id "$name")"
-  cat <<'EOF'
+  local g="$C_OK+$C_0" m="$C_WARN−$C_0"
+  echo
+  info "How should this vault's notes reach this server?"
+  cat <<EOF
 
-  How should this vault's notes get onto this server?
+  ${C_ACC}1${C_0}  ${C_B}Self-hosted LiveSync${C_0}
+       $g Free and real-time, end-to-end encrypted, everything on this server
+       $m The Self-hosted LiveSync plugin on each device; phones need HTTPS
 
-  1) Self-hosted LiveSync
-     + Free, real-time, conflicts handled for you; everything on your server
-     + End-to-end encrypted; devices set up from a generated Setup URI
-     - Needs the Self-hosted LiveSync plugin on each device
-     - Phones need an HTTPS address for this server (see README)
-     - Runs a CouchDB database here (shared by every LiveSync vault)
+  ${C_ACC}2${C_0}  ${C_B}Existing LiveSync server${C_0}
+       $g Joins a LiveSync setup already in use, settings unchanged
+       $m Needs its Setup URI; writes go into that real vault (try a test vault)
 
-  2) Existing LiveSync server
-     + Joins a LiveSync setup you already use, as one more device
-     + Keeps its encryption and other settings exactly as they are
-     - Needs a Setup URI from the plugin (Copy setup URI) and its passphrase
-     - Writes go straight into that real vault — consider a test vault first
+  ${C_ACC}3${C_0}  ${C_B}Official Obsidian Sync${C_0}
+       $g Easiest on devices: Obsidian's built-in Sync, real-time
+       $m Needs an Obsidian Sync subscription and one sign-in here
 
-  3) Official Obsidian Sync
-     + Easiest on your devices: just Obsidian's built-in Sync
-     + Real-time, conflicts handled for you
-     - Needs a paid Obsidian Sync subscription
-     - One interactive login during setup (reused for further vaults)
+  ${C_ACC}4${C_0}  ${C_B}Git${C_0}
+       $g Free, full history, any git host
+       $m Syncs every minute; edits on two devices in between can conflict
 
-  4) Git
-     + Free, full version history, works with any git host
-     - Syncs on a timer: changes take minutes, not seconds
-     - Editing the same note on two devices between syncs gives a conflict
-       (both versions are kept, but you tidy it up by hand)
-     - Needs the obsidian-git plugin on each device
-
-  5) None
-     + Nothing extra to run
-     - You keep vaults/<id>/ up to date yourself (rsync, Syncthing, etc.)
+  ${C_ACC}5${C_0}  ${C_B}None${C_0}
+       $g Nothing extra runs
+       $m Keep vaults/$id/ up to date yourself (rsync, Syncthing…)
 
 EOF
-  ask "  Choice [1]: " choice
+  ask "Choice [1]: " choice
   case "${choice:-1}" in
     1) src=livesync ;;
     2) src=livesync-existing ;;
     3) src=official ;;
     4) src=git ;;
     5) src=none ;;
-    *) echo "  Not a choice, nothing added."; return ;;
+    *) info "Not a choice, nothing added."; return ;;
   esac
+  say "Setting up '$name' $(printf '%s(%s, id: %s)%s' "$C_DIM" "$(source_label "$src")" "$id" "$C_0")"
 
   mkdir -p "vaults/$id"
   own "vaults/$id"
@@ -573,29 +726,32 @@ EOF
   # Registered last, so a vault only appears to MCP clients once its sync
   # is set up.
   reg add "$id" "$src" "$name"
-  ok "added vault '$name' (id: $id) — files in vaults/$id/"
+  ok "Added '$name' ${C_DIM}(files in vaults/$id/)${C_0}"
 
   local app
-  cat <<'EOF'
-
-  Optional: run the full Obsidian app for this vault on this server.
-  Everything so far works on plain files. The app adds what only Obsidian
-  can do: AI tools can run community plugins (Templater, Linter, ...), query
-  Bases, check for broken links and take screenshots of notes, and the vault
-  can be opened in a browser tab. It costs about 350 MB of RAM and a 1.3 GB
-  download. See "Obsidian app (optional)" in README.md for more.
+  say "Obsidian app ${C_DIM}(optional)${C_0}"
+  para <<EOF
+Everything so far works on plain files. The full Obsidian app, running on
+this server, adds what only Obsidian can do: AI tools can run community
+plugins (Templater, Linter…), query Bases, find broken links and take
+screenshots of notes, and the vault opens in a browser tab.
+${C_DIM}About 350 MB of RAM and a 1.3 GB download. More: "Obsidian app" in README.md${C_0}
 EOF
-  ask "  Add the Obsidian app for this vault? (later: $ME app enable $id) [y/N] " app
-  case "$app" in [yY]*) app_enable "$id" ;; esac
+  echo
+  ask "Add the Obsidian app for '$name'? [y/N] " app
+  case "$app" in
+    [yY]*) app_enable "$id" ;;
+    *) info "Skipped. Later: $ME app enable $id" ;;
+  esac
 }
 
 remove_vault() {
   local id="${1:-}" src confirm
-  [ -n "$id" ] || ask "  Id of the vault to remove: " id
+  [ -n "$id" ] || ask "Id of the vault to remove: " id
   src="$(reg list | awk -F'\t' -v i="$id" '$1==i { print $2 }')"
-  [ -n "$src" ] || { echo "  No vault with id '$id'."; return; }
-  ask "  Remove '$id' from the stack? Its files stay in vaults/$id/. [y/N] " confirm
-  case "$confirm" in [yY]*) ;; *) echo "  Kept it."; return ;; esac
+  [ -n "$src" ] || { info "No vault with id '$id'."; return; }
+  ask "Remove '$id' from the stack? Its files stay in vaults/$id/. [y/N] " confirm
+  case "$confirm" in [yY]*) ;; *) info "Kept it."; return ;; esac
   if [ -n "$(sync_dir "$src")" ] && [ -f "state/$id/sync.env" ]; then
     vc "$id" "$src" down -v --remove-orphans >/dev/null 2>&1 || true
   fi
@@ -603,8 +759,8 @@ remove_vault() {
     ac "$id" down -v --remove-orphans >/dev/null 2>&1 || true
   fi
   reg remove "$id"
-  ok "removed '$id'. Its notes are still in vaults/$id/ and its sync settings in"
-  echo "    state/$id/ — delete those yourself once you're sure."
+  ok "Removed '$id'"
+  info "Its notes are still in vaults/$id/ and its settings in state/$id/; delete them once sure."
 }
 
 ensure_all_up() {
@@ -612,22 +768,24 @@ ensure_all_up() {
   while IFS=$'\t' read -r id src name; do
     [ -n "$id" ] && [ -n "$(sync_dir "$src")" ] || continue
     if [ ! -f "state/$id/sync.env" ]; then
-      echo "  Warning: vault '$id' has no sync settings (state/$id/sync.env); its sync isn't running."
+      warn "'$id' has no sync settings (state/$id/sync.env), so its sync isn't running"
       continue
     fi
     set_env "state/$id/sync.env" STACK_ID "$STACK_ID"
     case "$src" in
-      livesync) ensure_couchdb; worker_configured "$id" || import_server_uri "$id"; vc "$id" "$src" up -d >/dev/null 2>&1 ;;
-      livesync-existing) ensure_livesync_network; vc "$id" "$src" up -d >/dev/null 2>&1 ;;
-      *) vc "$id" "$src" up -d --build >/dev/null 2>&1 ;;
-    esac
-    ok "sync running for '$id' ($(source_label "$src"))"
+      livesync) ensure_couchdb; worker_configured "$id" || import_server_uri "$id"
+        step "Sync for '$id' ${C_DIM}($(source_label "$src"))${C_0}" vc "$id" "$src" --progress plain up -d ;;
+      livesync-existing) ensure_livesync_network
+        step "Sync for '$id' ${C_DIM}($(source_label "$src"))${C_0}" vc "$id" "$src" --progress plain up -d ;;
+      *) step "Sync for '$id' ${C_DIM}($(source_label "$src"))${C_0}" vc "$id" "$src" --progress plain up -d --build ;;
+    esac || warn "Sync for '$id' didn't start; see above"
   done <<< "$(reg list)"
   for id in $(reg apps); do
     [ -f "state/$id/app.env" ] || continue
     # recreated, not just started: server.py is mounted as a single file, and
     # a git pull replaces it, which a running container wouldn't see
-    ac "$id" up -d --remove-orphans --force-recreate >/dev/null 2>&1 && ok "Obsidian app running for '$id'"
+    step "Obsidian app for '$id'" ac "$id" --progress plain up -d --remove-orphans --force-recreate \
+      || warn "The Obsidian app for '$id' didn't start; see above"
   done
 }
 
@@ -669,30 +827,20 @@ app_enable() {
   local id="${1:-}" f port ans token_new="" cfg _
   [ -n "$id" ] || { vault_rows; echo; ask "  Vault id: " id; }
   [ -n "$(vault_src "$id")" ] || die "no vault '$id'"
-  say "Obsidian app for '$id'"
-  cat <<'EOF'
-  The full Obsidian app runs on this server for this vault, in a browser tab,
-  and the MCP gains tools to run Obsidian commands, including community
-  plugins' commands, and to install and enable plugins.
-    + Plugins such as Linter or Templater work on the server's copy
-    + The real app from any browser, looking at the same synced vault
-    - 325-400 MB of RAM while idle, more with many plugins or while open in
-      a browser (the rest of the stack uses ~230 MB for three vaults)
-    - LinuxServer.io's Obsidian image: a 1.3 GB download, ~5 GB on disk
-  It doesn't sync by itself: the vault's own sync keeps the folder current.
-EOF
+  say "Setting up the Obsidian app for '$id'"
+  info "It opens vaults/$id/ and doesn't sync by itself; the vault's own sync keeps it current."
 
   # one token for every app in this install, shared with obsidian-mcp
   if [ -z "${OBSIDIAN_APP_TOKEN:-}" ]; then
     set_env .env OBSIDIAN_APP_TOKEN "$(openssl rand -hex 32)"
     load_env; token_new=1
-    ok "generated OBSIDIAN_APP_TOKEN"
+    ok "Generated the app token (OBSIDIAN_APP_TOKEN)"
   fi
   # the core network must have its fixed name (installs from before the
   # add-on get it here); recreating obsidian-mcp also picks up the token
   if [ -n "$token_new" ] || ! docker network inspect "${P}obsidian-internal" >/dev/null 2>&1; then
-    docker compose up -d >/dev/null 2>&1 || die "couldn't restart the core stack (try: $ME update)"
-    ok "obsidian-mcp updated for the app add-on"
+    step "Updating obsidian-mcp for the app" docker compose --progress plain up -d \
+      || die "couldn't restart the core stack (try: $ME update)"
   fi
 
   f="state/$id/app.env"
@@ -712,7 +860,7 @@ EOF
   if [ -z "$(app_env "$id" APP_PASSWORD)" ]; then set_env "$f" APP_PASSWORD "$(openssl rand -hex 12)"; fi
   if [ -z "$(app_env "$id" APP_PORT)" ]; then
     port="$(next_app_port)"
-    ask "  Port for the browser UI (on localhost) [$port]: " ans
+    ask "Port for the browser UI, on localhost [$port]: " ans
     set_env "$f" APP_PORT "${ans:-$port}" force
   fi
 
@@ -730,82 +878,75 @@ EOF
   # Official Sync can bring the devices' plugins and their settings along, so
   # the server's app runs the same plugins, configured the same way.
   if [ "$(vault_src "$id")" = official ] && [ -z "$(grep '^SYNC_CONFIGS=' "state/$id/sync.env" | cut -d= -f2- | tr -d '"')" ]; then
-    cat <<'EOF'
-
-  This vault uses Obsidian Sync, which can also sync settings: community
-  plugins and their settings, theme, hotkeys. With it on, the server's app
-  runs the same plugins as the other devices. It's two-way, like the notes:
-  plugin changes made here reach the other devices too.
+    para <<'EOF'
+This vault uses Obsidian Sync, which can also sync settings: community
+plugins and their settings, theme, hotkeys. With it on, the server's app
+runs the same plugins as the other devices. It's two-way, like the notes:
+plugin changes made here reach the other devices too.
 EOF
-    ask "  Sync plugins and settings with the other devices? [y/N] " ans
+    echo
+    ask "Sync plugins and settings with the other devices? [y/N] " ans
     case "$ans" in
       [yY]*)
         set_env "state/$id/sync.env" SYNC_CONFIGS "app,appearance,appearance-data,hotkey,core-plugin,core-plugin-data,community-plugin,community-plugin-data" force
-        vc "$id" official up -d --build >/dev/null 2>&1 || die "couldn't restart the sync for '$id'"
-        printf '  downloading plugins and settings'
-        for _ in $(seq 1 60); do
-          docker logs --since 1m "${P}obsidian-${id}-official-sync" 2>&1 | grep -q 'Fully synced' && break
-          printf '.'; sleep 3
-        done
+        step "Restarting Obsidian Sync with settings sync" vc "$id" official --progress plain up -d --build \
+          || die "couldn't restart the sync for '$id'"
+        step "Downloading plugins and settings" until_ok 60 settings_synced "$id" || warn "Still syncing; it carries on in the background."
+        ok "Settings sync is on ${C_DIM}($(ls "vaults/$id/.obsidian/plugins" 2>/dev/null | wc -l | tr -d ' ') plugins here)${C_0}"
         echo
-        ok "settings sync is on ($(ls "vaults/$id/.obsidian/plugins" 2>/dev/null | wc -l | tr -d ' ') plugins here)"
-        ask "  Let the MCP install, remove and change plugins (reaching every device)? [y/N] " ans
+        ask "Let AI tools install, remove and change plugins (reaching every device)? [y/N] " ans
         case "$ans" in
           [yY]*) set_env "$f" APP_EXTENSIONS manage force ;;
-          *) set_env "$f" APP_EXTENSIONS read force; ok "plugins are read-only for the MCP (APP_EXTENSIONS=read in $f)" ;;
+          *) set_env "$f" APP_EXTENSIONS read force; info "Plugins are read-only for AI tools (APP_EXTENSIONS=read in $f)" ;;
         esac
         ;;
       *) set_env "state/$id/sync.env" SYNC_CONFIGS none force ;;
     esac
   fi
 
-  echo "  Starting (the first time downloads the 1.3 GB image; a few minutes)..."
-  ac "$id" up -d --remove-orphans >/dev/null 2>&1 || { ac "$id" up -d --remove-orphans; die "the app didn't start"; }
-  printf '  waiting for Obsidian to open the vault'
-  for _ in $(seq 1 90); do
-    docker exec -u 1000:1000 "${P}obsidian-${id}-app" /lsiopy/bin/python3 /cli/server.py health >/dev/null 2>&1 && break
-    printf '.'; sleep 2
-  done
-  echo
-  docker exec -u 1000:1000 "${P}obsidian-${id}-app" /lsiopy/bin/python3 /cli/server.py health >/dev/null 2>&1 \
+  pull "$(compose_image extras/obsidian-app/docker-compose.yml app)" "the Obsidian app"
+  step "Starting the Obsidian app" ac "$id" --progress plain up -d --remove-orphans || die "the app didn't start"
+  step "Waiting for Obsidian to open the vault" until_ok 90 app_healthy "$id" \
     || die "Obsidian didn't start — check: $ME logs app:$id"
   reg set-app "$id" on
-  ok "Obsidian is running for '$id'"
 
   if [ "$(app_cli "$id" plugins:restrict 2>/dev/null)" = on ]; then
-    cat <<'EOF'
-
-  Obsidian starts vaults in restricted mode, where community plugins don't
-  run. Turning it off lets plugins in this vault's .obsidian folder, and any
-  installed through the MCP, run on this server.
+    para <<'EOF'
+Obsidian starts vaults in restricted mode, where community plugins don't
+run. Turning it off lets plugins in this vault's .obsidian folder, and any
+installed by AI tools, run on this server.
 EOF
-    ask "  Turn restricted mode off now? [y/N] " ans
+    echo
+    ask "Turn restricted mode off now? [y/N] " ans
     case "$ans" in
-      [yY]*) app_cli "$id" plugins:restrict off >/dev/null && ok "restricted mode is off; community plugins can run" ;;
-      *) echo "  Left on. Later: $ME app run $id plugins:restrict off" ;;
+      [yY]*) app_cli "$id" plugins:restrict off >/dev/null && ok "Restricted mode is off; community plugins can run" ;;
+      *) info "Left on. Later: $ME app run $id plugins:restrict off" ;;
     esac
   fi
   app_show "$id"
 }
 
-app_show() {
-  local id="$1"
-  cat <<EOF
+app_healthy() { docker exec -u 1000:1000 "${P}obsidian-$1-app" /lsiopy/bin/python3 /cli/server.py health; }
+settings_synced() { docker logs --since 2m "${P}obsidian-$1-official-sync" 2>&1 | grep -q 'Fully synced'; }
 
-  Browser UI:  http://localhost:$(app_env "$id" APP_PORT)  (on this server only)
-  Login:       $(app_env "$id" APP_USER) / APP_PASSWORD in state/$id/app.env
-  From another machine, tunnel it: ssh -L $(app_env "$id" APP_PORT):localhost:$(app_env "$id" APP_PORT) <this server>
-  MCP tools:   obsidian_app_commands, obsidian_app_run_command, obsidian_app_plugins
-EOF
+app_show() {
+  local id="$1" port; port="$(app_env "$id" APP_PORT)"
+  ok "The Obsidian app is running for '$id'"
+  kv "Browser UI" "http://localhost:$port ${C_DIM}(this server only)${C_0}"
+  kv "Login" "$(app_env "$id" APP_USER) ${C_DIM}/ APP_PASSWORD in state/$id/app.env${C_0}"
+  kv "Elsewhere" "ssh -L $port:localhost:$port <this server>, then the same URL"
 }
+
+# kv "Label" "value" — an aligned detail line
+kv() { printf '    %s%-14s%s %s\n' "$C_DIM" "$1" "$C_0" "$2"; }
 
 app_disable() {
   local id="${1:-}"
   [ -n "$id" ] || ask "  Vault id: " id
-  app_on "$id" || { echo "  The app isn't enabled for '$id'."; return; }
+  app_on "$id" || { info "The app isn't enabled for '$id'."; return; }
   [ -f "state/$id/app.env" ] && ac "$id" down -v --remove-orphans >/dev/null 2>&1 || true
   reg set-app "$id" off
-  ok "stopped the Obsidian app for '$id'. Its settings stay in state/$id/app/."
+  ok "Stopped the Obsidian app for '$id' ${C_DIM}(its settings stay in state/$id/app/)${C_0}"
 }
 
 cmd_app() {
@@ -822,12 +963,13 @@ cmd_app() {
       ;;
     status)
       local id any=""
+      say "Obsidian app"
       for id in $(reg apps); do
         any=1
         printf '  %-20s %s\n' "$id" "$(dot "$(ours app "$id" | head -1)")"
-        app_show "$id" | sed -n '2,3p'
+        kv "Browser UI" "http://localhost:$(app_env "$id" APP_PORT)"
       done
-      [ -n "$any" ] || echo "  No vault has the Obsidian app. Add it with: $ME app enable <vault id>"
+      [ -n "$any" ] || info "No vault has the Obsidian app. Add it with: $ME app enable <vault id>"
       ;;
     *) die "usage: $ME app <status | enable [id] | disable [id] | run <id> <command...>>" ;;
   esac
@@ -841,18 +983,21 @@ cmd_install() {
   command -v openssl >/dev/null 2>&1 || die "openssl is required to generate secrets."
   command -v curl >/dev/null 2>&1 || die "curl is required."
 
-  say "Setting up the core stack"
+  banner
+  info "$ROOT${P:+  ·  prefix $P}"
+
+  say "Configuration"
   if [ ! -f .env ]; then
     cp .env.example .env
-    ok "created .env from .env.example"
+    ok "Created .env"
   else
-    ok ".env already exists, leaving it alone"
+    ok "Using the existing .env"
   fi
   chmod 600 .env
   load_env
-  if [ -z "${API_KEY:-}" ]; then set_env .env API_KEY "$(openssl rand -hex 32)"; ok "generated API_KEY"; fi
-  if [ -z "${MCP_BEARER_TOKEN:-}" ]; then set_env .env MCP_BEARER_TOKEN "$(openssl rand -hex 32)"; ok "generated MCP_BEARER_TOKEN"; fi
-  if [ -z "$STACK_ID" ]; then set_env .env STACK_ID "$(openssl rand -hex 8)"; ok "generated STACK_ID (labels this install's containers)"; fi
+  if [ -z "${API_KEY:-}" ]; then set_env .env API_KEY "$(openssl rand -hex 32)"; ok "Generated the internal API key"; fi
+  if [ -z "${MCP_BEARER_TOKEN:-}" ]; then set_env .env MCP_BEARER_TOKEN "$(openssl rand -hex 32)"; ok "Generated the MCP bearer token"; fi
+  if [ -z "$STACK_ID" ]; then set_env .env STACK_ID "$(openssl rand -hex 8)"; ok "Generated this install's id ${C_DIM}(labels its containers)${C_0}"; fi
   load_env
 
   # Catch a name collision before docker does. A container is ours if it
@@ -879,36 +1024,45 @@ $(echo "$foreign" | tr ' ' '\n' | sed '/^$/d;s/^/    /')
   chmod 700 state
   own vaults
 
-  say "Starting obsidian-api and obsidian-mcp"
+  say "Core services"
+  step "Building obsidian-api and obsidian-mcp" docker compose --progress plain build \
+    || die "the build failed (see above)"
   # --remove-orphans cleans up containers from older versions of this stack.
-  docker compose up -d --build --remove-orphans
+  step "Starting obsidian-api and obsidian-mcp" docker compose --progress plain up -d --remove-orphans \
+    || die "they didn't start (see above)"
   # the core network had a generated name before it got a fixed one
   docker network rm "${P}obsidian-server-stack_obsidian-net" >/dev/null 2>&1 || true
   reg init
-  local up="" _
-  printf '  waiting for obsidian-mcp'
-  for _ in $(seq 1 30); do
-    if curl -sf "http://localhost:${MCP_PORT:-7002}/health" >/dev/null 2>&1; then up=1; break; fi
-    printf '.'; sleep 1
-  done
-  echo
-  [ -n "$up" ] || die "obsidian-mcp didn't come up — check: $ME logs mcp"
-  ok "obsidian-mcp is up on http://localhost:${MCP_PORT:-7002}/mcp"
+  step "Waiting for the MCP server" until_ok 30 curl -sf "http://localhost:${MCP_PORT:-7002}/health" \
+    || die "obsidian-mcp didn't come up — check: $ME logs mcp"
 
-  say "Vaults"
-  ensure_all_up
-  if [ -z "$(reg list)" ]; then
-    echo "  No vaults yet — let's add one."
+  if [ -n "$(reg list)" ]; then
+    say "Vaults"
+    ensure_all_up
+  else
     add_vault
   fi
   [ -t 0 ] && offer_link
+  summary
   cmd_menu
+}
+
+# The end of an install: where things are and what to do next.
+summary() {
+  local token="${MCP_BEARER_TOKEN:-}"
+  say "Ready"
+  kv "MCP endpoint" "http://localhost:${MCP_PORT:-7002}/mcp"
+  kv "Bearer token" "${token:0:6}… ${C_DIM}(full: $ME endpoint --show-token)${C_0}"
+  kv "Vaults" "$(reg list | cut -f1 | paste -sd ' ' -)"
+  kv "Manage" "$ME ${C_DIM}(menu)  ·  $ME help${C_0}"
+  info "The MCP listens on localhost only; README.md lists ways to reach it from elsewhere."
 }
 
 offer_link() {
   local name; name="$(default_link_name)"
   [ "$(readlink -f "/usr/local/bin/$name" 2>/dev/null)" = "$ROOT/obsidian-stack" ] && return 0
-  ask "  Add an '$name' command to manage this install from anywhere? [Y/n] " ans
+  echo
+  ask "Add an '$name' command to manage this install from anywhere? [Y/n] " ans
   case "${ans:-y}" in [nN]*) ;; *) cmd_link "$name" || true ;; esac
 }
 
@@ -926,7 +1080,7 @@ cmd_link() {
     die "$target already exists and points elsewhere. Pick another name: $ME link <name>"
   fi
   ln -s "$ROOT/obsidian-stack" "$target" 2>/dev/null || die "couldn't write $target (try with sudo)"
-  ok "added '$name' → $ROOT"
+  ok "Added the '$name' command"
 }
 
 # vault_rows [counts] — one line per vault: id, name, source, sync state
@@ -934,9 +1088,9 @@ cmd_link() {
 vault_rows() {
   local lines id src name state extra=""
   lines="$(reg list)"
-  [ -n "$lines" ] || { echo "  (no vaults yet)"; return; }
+  [ -n "$lines" ] || { info "No vaults yet"; return; }
   while IFS=$'\t' read -r id src name; do
-    if [ -z "$(sync_dir "$src")" ]; then state=$'\033[90m○ no sync\033[0m'
+    if [ -z "$(sync_dir "$src")" ]; then state="${C_DIM}○ no sync${C_0}"
     else state="$(dot "$(ours sync "$id" | head -1)")"; fi
     [ "${1:-}" = counts ] && extra="$(printf '%6s notes  ' "$(find "vaults/$id" -name '*.md' -not -path '*/.*' 2>/dev/null | wc -l | tr -d ' ')")"
     printf '  %-20s %-20s %-22s %s%s\n' "$id" "$name" "$(source_label "$src")" "$extra" "$state"
@@ -946,11 +1100,11 @@ vault_rows() {
 cmd_status() {
   require_installed
   say "obsidian-server-stack"
-  echo "  folder:    $ROOT"
-  echo "  prefix:    ${P:-(none)}   stack id: $STACK_ID"
   local mcp_state
-  if curl -sf "http://localhost:${MCP_PORT:-7002}/health" >/dev/null 2>&1; then mcp_state=$'\033[32mresponding\033[0m'; else mcp_state=$'\033[31mnot responding\033[0m'; fi
-  echo "  MCP:       http://localhost:${MCP_PORT:-7002}/mcp  ($mcp_state)"
+  if curl -sf "http://localhost:${MCP_PORT:-7002}/health" >/dev/null 2>&1; then mcp_state="${C_OK}● responding${C_0}"; else mcp_state="${C_ERR}● not responding${C_0}"; fi
+  kv "Folder" "$ROOT"
+  kv "Prefix" "${P:-(none)}  ${C_DIM}·  install id $STACK_ID${C_0}"
+  kv "MCP" "http://localhost:${MCP_PORT:-7002}/mcp  $mcp_state"
 
   say "Core"
   local c
@@ -1004,18 +1158,18 @@ cmd_restart() {
   local target="${1:-}" src id name
   [ -n "$target" ] || die "usage: $ME restart <vault id | api | mcp | couchdb | all>"
   case "$target" in
-    api) docker compose restart obsidian-api >/dev/null 2>&1; ok "restarted api" ;;
-    mcp) docker compose restart obsidian-mcp >/dev/null 2>&1; ok "restarted mcp" ;;
-    couchdb) ( cd sync/couchdb && docker compose restart couchdb >/dev/null 2>&1 ); ok "restarted couchdb" ;;
+    api) docker compose restart obsidian-api >/dev/null 2>&1; ok "Restarted obsidian-api" ;;
+    mcp) docker compose restart obsidian-mcp >/dev/null 2>&1; ok "Restarted obsidian-mcp" ;;
+    couchdb) ( cd sync/couchdb && docker compose restart couchdb >/dev/null 2>&1 ); ok "Restarted CouchDB" ;;
     app:*)
       app_on "${target#app:}" || die "the app isn't enabled for '${target#app:}'"
-      ac "${target#app:}" restart >/dev/null 2>&1; ok "restarted the Obsidian app for '${target#app:}'" ;;
+      ac "${target#app:}" restart >/dev/null 2>&1; ok "Restarted the Obsidian app for '${target#app:}'" ;;
     all)
-      docker compose restart >/dev/null 2>&1; ok "restarted api and mcp"
-      [ -n "$(ours couchdb)" ] && { ( cd sync/couchdb && docker compose restart couchdb >/dev/null 2>&1 ); ok "restarted couchdb"; }
+      docker compose restart >/dev/null 2>&1; ok "Restarted obsidian-api and obsidian-mcp"
+      [ -n "$(ours couchdb)" ] && { ( cd sync/couchdb && docker compose restart couchdb >/dev/null 2>&1 ); ok "Restarted CouchDB"; }
       while IFS=$'\t' read -r id src name; do
         [ -n "$id" ] && [ -n "$(sync_dir "$src")" ] && [ -f "state/$id/sync.env" ] || continue
-        vc "$id" "$src" restart >/dev/null 2>&1; ok "restarted sync for '$id'"
+        vc "$id" "$src" restart >/dev/null 2>&1; ok "Restarted sync for '$id'"
       done <<< "$(reg list)"
       ;;
     *)
@@ -1023,7 +1177,7 @@ cmd_restart() {
       [ -n "$src" ] || die "no vault '$target' (vault ids: $(reg list | cut -f1 | tr '\n' ' '))"
       [ -n "$(sync_dir "$src")" ] || { echo "  '$target' has no sync to restart."; return; }
       vc "$target" "$src" restart >/dev/null 2>&1
-      ok "restarted sync for '$target'"
+      ok "Restarted sync for '$target'"
       ;;
   esac
 }
@@ -1034,7 +1188,7 @@ cmd_update() {
   if [ -d .git ]; then
     git pull --ff-only || die "git pull failed — resolve that, then run: $ME update"
   else
-    warn "not a git checkout, so nothing to pull; rebuilding what's here"
+    warn "Not a git checkout, so nothing to pull; rebuilding what's here"
   fi
   # Re-running install rebuilds the images, recreates the core and brings
   # every vault's sync up on the new version. Skip its menu.
@@ -1048,25 +1202,26 @@ cmd_uninstall() {
   [ "${1:-}" = "--yes" ] && yes=1
 
   say "Uninstall ($ROOT)"
-  echo "  This removes everything labelled obsidian-server-stack.id=$STACK_ID:"
+  info "Removes everything labelled obsidian-server-stack.id=$STACK_ID:"
   docker ps -a --filter "label=$LABEL.id=$STACK_ID" --format '{{.Names}}' | sort | sed 's/^/    /'
-  echo "  plus this install's network, built images and obsidian-stack command(s)."
-  echo "  Notes in vaults/ and settings in state/ and .env are kept unless you choose otherwise."
+  info "Plus its networks, built images and obsidian-stack command. Notes, settings and .env"
+  info "Are kept unless you choose otherwise."
   if [ -z "$yes" ]; then
-    ask "  Continue? [y/N] " ans
-    case "$ans" in [yY]*) ;; *) echo "  Nothing removed."; return ;; esac
+    echo
+    ask "Continue? [y/N] " ans
+    case "$ans" in [yY]*) ;; *) info "Nothing removed."; return ;; esac
   fi
 
   # each vault's sync, including its local sync database volume, and any
   # Obsidian app add-ons
   if docker image inspect "${P}obsidian-api:local" >/dev/null 2>&1; then
     for id in $(reg apps 2>/dev/null); do
-      [ -f "state/$id/app.env" ] && ac "$id" down -v --remove-orphans >/dev/null 2>&1 && ok "removed the Obsidian app for '$id'"
+      [ -f "state/$id/app.env" ] && ac "$id" down -v --remove-orphans >/dev/null 2>&1 && ok "Removed the Obsidian app for '$id'"
     done
     while IFS=$'\t' read -r id src name; do
       [ -n "$id" ] || continue
       if [ -n "$(sync_dir "$src")" ] && [ -f "state/$id/sync.env" ]; then
-        vc "$id" "$src" down -v --remove-orphans >/dev/null 2>&1 && ok "removed sync for '$id'"
+        vc "$id" "$src" down -v --remove-orphans >/dev/null 2>&1 && ok "Removed sync for '$id'"
       fi
       # volumes `down -v` misses: ones from an older version of a compose file
       for project in "${P}obsidian-$id" "${P}obsidian-$id-app"; do
@@ -1079,38 +1234,38 @@ cmd_uninstall() {
   # the LiveSync vaults, so they're kept unless asked
   if [ -f sync/couchdb/.env ] && [ -n "$(ours couchdb)$(ours couchdb-init)" ]; then
     ans=""
-    [ -z "$yes" ] && ask "  Also delete the CouchDB databases? Devices keep their own copies. [y/N] " ans
+    [ -z "$yes" ] && ask "Also delete the CouchDB databases? Devices keep their own copies. [y/N] " ans
     case "$ans" in
-      [yY]*) ( cd sync/couchdb && docker compose down -v >/dev/null 2>&1 ); ok "removed CouchDB and its databases" ;;
-      *) ( cd sync/couchdb && docker compose down >/dev/null 2>&1 ); ok "removed CouchDB (databases kept in its Docker volume)" ;;
+      [yY]*) ( cd sync/couchdb && docker compose down -v >/dev/null 2>&1 ); ok "Removed CouchDB and its databases" ;;
+      *) ( cd sync/couchdb && docker compose down >/dev/null 2>&1 ); ok "Removed CouchDB (databases kept in its Docker volume)" ;;
     esac
   fi
 
-  docker compose down --rmi local --remove-orphans >/dev/null 2>&1 && ok "removed obsidian-api and obsidian-mcp"
+  docker compose down --rmi local --remove-orphans >/dev/null 2>&1 && ok "Removed obsidian-api and obsidian-mcp"
 
   # anything still labelled as ours (e.g. sync for a vault whose settings
   # were deleted by hand)
   for c in $(docker ps -aq --filter "label=$LABEL.id=$STACK_ID"); do
-    docker rm -f "$c" >/dev/null && ok "removed leftover container $c"
+    docker rm -f "$c" >/dev/null && ok "Removed leftover container $c"
   done
-  docker network rm "${P}obsidian-livesync" >/dev/null 2>&1 && ok "removed network ${P}obsidian-livesync"
+  docker network rm "${P}obsidian-livesync" >/dev/null 2>&1 && ok "Removed network ${P}obsidian-livesync"
   docker volume rm "${P}obsidian-deno-cache" >/dev/null 2>&1 || true
   docker rmi "${P}obsidian-official-sync:local" "${P}obsidian-git-sync:local" >/dev/null 2>&1 || true
 
   for link in /usr/local/bin/*; do
     [ -L "$link" ] && [ "$(readlink -f "$link")" = "$ROOT/obsidian-stack" ] || continue
-    rm -f "$link" 2>/dev/null && ok "removed command $(basename "$link")"
+    rm -f "$link" 2>/dev/null && ok "Removed command $(basename "$link")"
   done
 
   if [ -z "$yes" ]; then
     echo
-    echo "  Notes are still in $ROOT/vaults/ (sync settings in state/, secrets in .env)."
-    ask "  Type 'delete' to delete those too, or press Enter to keep them: " ans
+    info "Notes are still in $ROOT/vaults/ (sync settings in state/, secrets in .env)."
+    ask "Type 'delete' to delete those too, or press Enter to keep them: " ans
     if [ "$ans" = delete ]; then
       rm -rf vaults state .env sync/couchdb/.env
-      ok "deleted vaults/, state/ and .env"
+      ok "Deleted vaults/, state/ and .env"
     else
-      ok "kept vaults/, state/ and .env"
+      ok "Kept vaults/, state/ and .env"
     fi
   fi
   say "Uninstalled"
@@ -1118,13 +1273,14 @@ cmd_uninstall() {
 
 cmd_endpoint() {
   require_installed
-  echo "  MCP endpoint:  http://localhost:${MCP_PORT:-7002}/mcp"
+  say "MCP endpoint"
+  kv "URL" "http://localhost:${MCP_PORT:-7002}/mcp"
   if [ "${1:-}" = "--show-token" ]; then
-    echo "  Bearer token:  ${MCP_BEARER_TOKEN}"
+    kv "Bearer token" "${MCP_BEARER_TOKEN}"
   else
-    echo "  Bearer token:  ${MCP_BEARER_TOKEN:0:6}… (MCP_BEARER_TOKEN in .env, or: $ME endpoint --show-token)"
+    kv "Bearer token" "${MCP_BEARER_TOKEN:0:6}… ${C_DIM}(full: $ME endpoint --show-token)${C_0}"
   fi
-  echo "  Clients send:  Authorization: Bearer <token>"
+  kv "Header" "Authorization: Bearer <token>"
 }
 
 cmd_menu() {
@@ -1132,30 +1288,30 @@ cmd_menu() {
   require_installed
   local choice target
   while :; do
-    say "Vaults  ($ROOT)"
+    say "Vaults ${C_DIM}$ROOT${C_0}"
     vault_rows
-    echo
-    echo "  a) add   r) remove   s) status   l) logs   R) restart   e) endpoint"
-    echo "  o) Obsidian app   U) setup URI   u) update   q) quit"
-    ask "  > " choice
-    case "${choice:-q}" in
+    local k="$C_ACC" z="$C_0"
+    printf '\n  %sa%s add   %sr%s remove   %ss%s status   %sl%s logs   %sR%s restart   %se%s endpoint\n' "$k" "$z" "$k" "$z" "$k" "$z" "$k" "$z" "$k" "$z" "$k" "$z"
+    printf '  %so%s Obsidian app   %sU%s setup URI   %su%s update   %sq%s quit\n\n' "$k" "$z" "$k" "$z" "$k" "$z" "$k" "$z"
+    ask "Choose: " choice
+    case "$choice" in
       a) add_vault ;;
       r) remove_vault ;;
       s) cmd_status ;;
-      l) ask "  Logs for (vault id, api, mcp, couchdb): " target; [ -n "$target" ] && { cmd_logs "$target" || true; } ;;
-      R) ask "  Restart (vault id, api, mcp, couchdb, all): " target; [ -n "$target" ] && { cmd_restart "$target" || true; } ;;
+      l) ask "Logs for (vault id, app:<id>, api, mcp, couchdb): " target; [ -n "$target" ] && { cmd_logs "$target" || true; } ;;
+      R) ask "Restart (vault id, app:<id>, api, mcp, couchdb, all): " target; [ -n "$target" ] && { cmd_restart "$target" || true; } ;;
       e) cmd_endpoint ;;
-      o) cmd_app status; echo; ask "  Enable or disable the app for (vault id, blank to skip): " target
+      o) cmd_app status; echo; ask "Turn the app on or off for (vault id, blank to skip): " target
          if [ -n "$target" ]; then
            if app_on "$target"; then ( app_disable "$target" ) || true; else ( app_enable "$target" ) || true; fi
          fi ;;
-      U) ask "  Setup URI for (vault id): " target; [ -n "$target" ] && { ( cmd_setup_uri "$target" ) || true; } ;;
+      U) ask "Setup URI for (vault id): " target; [ -n "$target" ] && { ( cmd_setup_uri "$target" ) || true; } ;;
       u) cmd_update; return ;;
-      *) break ;;
+      q|Q|"") break ;;
+      *) warn "'$choice' isn't an option" ;;
     esac
   done
-  say "Done"
-  cmd_endpoint
+  echo
 }
 
 # --- dispatch ----------------------------------------------------------------
