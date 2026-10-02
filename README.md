@@ -129,6 +129,8 @@ Enabling it asks whether to turn off Obsidian's restricted mode, which otherwise
 
 It's the heaviest part by far: 325–400 MB of RAM per vault while idle, against about 230 MB for the whole stack without it. Starting with 13 community plugins took about 870 MB before settling, and the browser tab adds more while open. The image is a 1.3 GB download and about 5 GB on disk. If Obsidian exits, including when its window is closed in the browser, it is reopened within about 30 seconds.
 
+Each vault gets its own app container rather than sharing one. Obsidian can open several vaults in one container, and the CLI can target each, but in testing it saved almost no memory (two vaults in one container used about 675 MB, the same as two containers), since most of the cost is per window. It also let one vault's plugins read the other vaults, and resizing the shared screen for one vault's screenshots left the other vault's window the wrong size.
+
 ## Running a second instance
 
 Multiple vaults and multiple sync accounts fit in one install. A second, separate install is for vaults that need their own MCP endpoint and token, for example one set for one person or agent and another set for another, since a token sees every vault in its install. It's also a way to try a new version alongside a working one.
