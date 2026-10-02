@@ -60,5 +60,15 @@ if [ -n "${DEVICE_NAME:-}" ]; then
   ob sync-config --path /vault --device-name "$DEVICE_NAME" 2>/dev/null || true
 fi
 
+# Settings sync (.obsidian: plugins and their settings, appearance, hotkeys),
+# the same categories as Obsidian Sync's settings on a device. Off unless
+# SYNC_CONFIGS is set; "none" turns it off again. Used with the Obsidian app
+# add-on, so the server's app runs the same plugins as the other devices.
+case "${SYNC_CONFIGS:-}" in
+  "") ;;
+  none) ob sync-config --path /vault --configs "" >/dev/null ;;
+  *) ob sync-config --path /vault --configs "$SYNC_CONFIGS" >/dev/null ;;
+esac
+
 echo "Starting continuous sync for '${VAULT_NAME}'..."
 exec ob sync --continuous --path /vault
