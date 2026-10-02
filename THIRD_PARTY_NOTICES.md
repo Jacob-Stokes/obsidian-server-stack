@@ -50,6 +50,22 @@ Original Dockerfile and entrypoint script. The image installs `git` and
 `openssh-client` from Alpine's package repository at build time, the same
 as any OS package; nothing from those projects is vendored here.
 
+## extras/obsidian-app/
+
+Original compose file, service definition and `server.py`. The image they
+run, [`lscr.io/linuxserver/obsidian`](https://docs.linuxserver.io/images/docker-obsidian/)
+([source](https://github.com/linuxserver/docker-obsidian), GPL-3.0), is
+published by LinuxServer.io and pulled as is; nothing from it is vendored
+here. It contains the Obsidian desktop app, which is proprietary software of
+Dynalist Inc., downloaded by LinuxServer.io from Obsidian's own releases when
+they build the image. This repository neither includes nor redistributes it.
+Obsidian is free for personal and commercial use under its own terms.
+
+The setting that switches on Obsidian's command-line interface without
+opening Settings (`"cli": true` in `obsidian.json`) was documented by
+[obsidianless](https://github.com/lucastraba/obsidianless) (MIT); no code
+from that project is used.
+
 ## Everything else
 
 `services/obsidian-mcp`, `services/obsidian-api`, `obsidian-stack` and `install.sh` are

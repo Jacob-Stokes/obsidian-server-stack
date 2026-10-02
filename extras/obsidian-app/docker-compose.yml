@@ -1,0 +1,64 @@
+# Optional add-on: the full Obsidian desktop app for one vault, in a browser
+# tab, plus a small service through which obsidian-mcp drives it with the
+# official Obsidian CLI (run commands, including community plugins'
+# commands; list, install and enable plugins).
+#
+# Per vault, started by `obsidian-stack app enable <id>` as compose project
+# <prefix>obsidian-<id>-app with state/<id>/app.env:
+#   docker compose -p <prefix>obsidian-<id>-app --project-directory extras/obsidian-app \
+#     -f extras/obsidian-app/docker-compose.yml --env-file state/<id>/app.env up -d
+#
+# The app only opens the vault folder; it doesn't sync. The vault's own sync
+# container keeps that folder up to date, and the app sees changes on disk.
+
+services:
+  # LinuxServer.io's image: Obsidian under a Wayland desktop, streamed to the
+  # browser. Pulled, never rebuilt; Obsidian itself is downloaded by them.
+  #
+  # The CLI service (server.py) runs inside this container as its own s6
+  # service, not as a separate container: the Obsidian CLI reaches the app
+  # through a socket in /tmp and a lock naming the app's hostname and process
+  # id, and a second container sharing those namespaces is left dead or
+  # detached whenever the app restarts (found by testing).
+  app:
+    image: lscr.io/linuxserver/obsidian:v1.13.7-ls146
+    container_name: ${INSTANCE_PREFIX:-}obsidian-${VAULT_ID:?}-app
+    labels:
+      obsidian-server-stack.id: ${STACK_ID:?Set STACK_ID in .env}
+      obsidian-server-stack.vault: ${VAULT_ID:?}
+      obsidian-server-stack.role: app
+    restart: unless-stopped
+    shm_size: 1gb
+    environment:
+      PUID: 1000
+      PGID: 1000
+      TZ: ${TZ:-Etc/UTC}
+      TITLE: Obsidian (${VAULT_ID})
+      # Login for the browser UI.
+      CUSTOM_USER: ${APP_USER:-obsidian}
+      PASSWORD: ${APP_PASSWORD:?}
+      # For the CLI service: obsidian-mcp's token, and which commands it may run.
+      APP_TOKEN: ${OBSIDIAN_APP_TOKEN:?}
+      APP_COMMANDS: ${APP_COMMANDS:-*}
+    volumes:
+      - ${VAULT_DIR:?}:/vault
+      # Obsidian's own settings: which vault to open, CLI switched on.
+      - ${STATE_DIR:?}/app:/config
+      - ./server.py:/cli/server.py:ro
+      - ./obsidian-cli.service:/custom-services.d/obsidian-cli:ro
+    ports:
+      - "127.0.0.1:${APP_PORT:?}:3000"
+    healthcheck:
+      test: ["CMD", "/lsiopy/bin/python3", "/cli/server.py", "health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 90s
+    networks:
+      - internal
+
+# The core stack's network, so obsidian-mcp can reach the CLI service at
+# http://<prefix>obsidian-<id>-app:7310.
+networks:
+  internal:
+    name: ${INSTANCE_PREFIX:-}obsidian-internal
+    external: true

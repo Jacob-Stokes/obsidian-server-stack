@@ -10,6 +10,11 @@ export class ObsidianClient {
     private readonly vault?: { id: string; scopePath: string }
   ) {}
 
+  /** The vault this client is bound to, if any. */
+  get vaultId(): string | undefined {
+    return this.vault?.id;
+  }
+
   async call(method: string, path: string, body?: unknown, contentType = "application/json"): Promise<any> {
     const prefix = process.env.OBSIDIAN_API_PREFIX ?? "";
     const backendPath = path.startsWith("/api/") ? `${prefix}${path.slice(4)}` : path;

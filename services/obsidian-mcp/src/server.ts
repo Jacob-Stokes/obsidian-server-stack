@@ -8,7 +8,7 @@
 import { startMcp } from "./lib/transport.js";
 import { VaultConnections } from "./lib/connections.js";
 import { ObsidianError } from "./obsidian-client.js";
-import { obsidianTools } from "./vault-tools.js";
+import { APP_TOOLS, obsidianTools } from "./vault-tools.js";
 
 const PORT = parseInt(process.env.PORT || "7002", 10);
 const OBSIDIAN_BASE_URL = process.env.OBSIDIAN_BASE_URL || "http://obsidian-api:3000";
@@ -76,16 +76,25 @@ await startMcp({
       "Prefer focused tools over deprecated compatibility tools; use expected_hash for read-modify-write work and dry_run for broad changes.";
     try {
       const vaults = await connections.list();
+      const apps = vaults.filter((v) => v.app).map((v) => v.id);
+      const appNote = apps.length
+        ? ` The Obsidian app also runs on the server for ${apps.join(", ")}: obsidian_app_commands, obsidian_app_run_command and obsidian_app_plugins reach its commands and community plugins.`
+        : "";
       if (vaults.length === 1) {
         const [v] = vaults;
-        return `Server-side Obsidian vault. This server has one vault, "${v.name}" (id: ${v.id}); vault_id can be omitted from every tool. ${general}`;
+        return `Server-side Obsidian vault. This server has one vault, "${v.name}" (id: ${v.id}); vault_id can be omitted from every tool.${appNote} ${general}`;
       }
-      return `Server-side Obsidian vaults. This server has ${vaults.length} vaults: call obsidian_list_vaults, then pass vault_id to every other tool. ${general}`;
+      return `Server-side Obsidian vaults. This server has ${vaults.length} vaults: call obsidian_list_vaults, then pass vault_id to every other tool.${appNote} ${general}`;
     } catch {
       return `Server-side Obsidian vaults. Call obsidian_list_vaults, then pass vault_id to the other tools (it can be omitted when there is only one vault). ${general}`;
     }
   },
   tools: obsidianTools(connections),
+  // The app tools only appear when some vault has the add-on on.
+  listTools: async () => {
+    const anyApp = await connections.list().then((vs) => vs.some((v) => v.app), () => false);
+    return (toolName) => anyApp || !APP_TOOLS.has(toolName);
+  },
   onBackendError: (e) => {
     if (e instanceof ObsidianError) {
       const detail = typeof e.detail === "string" ? e.detail : JSON.stringify(e.detail);

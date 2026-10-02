@@ -69,7 +69,8 @@ export function validateRegistry(value) {
       !SOURCES.includes(v.source) ||
       typeof v.aiEnabled !== "boolean" ||
       (v.scopePath !== undefined && !validScope(v.scopePath)) ||
-      Object.keys(v).some((k) => !["id", "name", "source", "aiEnabled", "scopePath"].includes(k))
+      (v.app !== undefined && typeof v.app !== "boolean") ||
+      Object.keys(v).some((k) => !["id", "name", "source", "aiEnabled", "scopePath", "app"].includes(k))
     ) {
       throw new Error(`The vault registry has an invalid entry${v?.id ? ` (${v.id})` : ""}.`);
     }
@@ -133,7 +134,7 @@ export function availableVaults(vaultsRoot) {
     } catch {
       continue;
     }
-    out.push({ id: v.id, name: v.name, source: v.source, scopePath: v.scopePath ?? "/" });
+    out.push({ id: v.id, name: v.name, source: v.source, scopePath: v.scopePath ?? "/", app: v.app === true });
   }
   return out;
 }
@@ -169,12 +170,27 @@ export function removeVault(vaultsRoot, id) {
   writeRegistry(vaultsRoot, { ...reg, revision: reg.revision + 1, vaults: reg.vaults.filter((v) => v.id !== id) });
 }
 
+// Turns the optional Obsidian app add-on (extras/obsidian-app) on or off for a
+// vault. Only a flag: obsidian-stack starts and stops the containers.
+export function setApp(vaultsRoot, id, enabled) {
+  const reg = readRegistry(vaultsRoot);
+  if (!reg.vaults.some((v) => v.id === id)) throw new Error(`No vault with id "${id}".`);
+  const vaults = reg.vaults.map((v) => {
+    if (v.id !== id) return v;
+    const { app, ...rest } = v;
+    return enabled ? { ...rest, app: true } : rest;
+  });
+  writeRegistry(vaultsRoot, { ...reg, revision: reg.revision + 1, vaults });
+}
+
 // --- CLI (used by install.sh) ------------------------------------------------
 //   node registry.mjs <vaultsRoot> list               -> id<TAB>source<TAB>name per line
 //   node registry.mjs <vaultsRoot> suggest-id <name>
 //   node registry.mjs <vaultsRoot> add <id> <source> <name>
 //   node registry.mjs <vaultsRoot> remove <id>
 //   node registry.mjs <vaultsRoot> init                -> create an empty registry if missing
+//   node registry.mjs <vaultsRoot> apps                -> ids of vaults with the app add-on on
+//   node registry.mjs <vaultsRoot> set-app <id> on|off
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {
   const [root, cmd, ...args] = process.argv.slice(2);
@@ -189,6 +205,11 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.a
       addVault(root, { id, source, name: name.join(" ") });
     } else if (cmd === "remove") {
       removeVault(root, args[0]);
+    } else if (cmd === "apps") {
+      for (const v of readRegistry(root, { optional: true }).vaults) if (v.app) console.log(v.id);
+    } else if (cmd === "set-app") {
+      if (!["on", "off"].includes(args[1])) throw new Error("usage: set-app <id> on|off");
+      setApp(root, args[0], args[1] === "on");
     } else if (cmd === "init") {
       if (!fs.existsSync(registryPath(root))) writeRegistry(root, emptyRegistry());
     } else {

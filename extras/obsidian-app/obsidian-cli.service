@@ -1,0 +1,5 @@
+#!/usr/bin/with-contenv bash
+# The HTTP front for the Obsidian CLI (server.py), run as a supervised s6
+# service inside the app container: started after the desktop, restarted by
+# s6 if it exits, and always in the same namespaces as Obsidian itself.
+exec s6-setuidgid abc /lsiopy/bin/python3 /cli/server.py serve

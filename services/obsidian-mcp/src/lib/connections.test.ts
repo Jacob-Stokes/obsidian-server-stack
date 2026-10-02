@@ -42,7 +42,7 @@ function backend(t: test.TestContext) {
 test("one MCP inventory offers vault selection on every content tool", async (t) => {
   const { connections } = backend(t);
   const tools = obsidianTools(connections);
-  assert.equal(new Set(tools.map((tool) => tool.def.name)).size, 20);
+  assert.equal(new Set(tools.map((tool) => tool.def.name)).size, 23);
   assert.equal(tools.filter((tool) => tool.def.name === "obsidian_list_vaults").length, 1);
   for (const tool of tools) {
     if (tool.def.name === "obsidian_list_vaults") continue;
@@ -100,4 +100,52 @@ test("an omitted vault_id uses the only vault, and is refused with the choices w
   assert.equal((await connections.context()).client !== undefined, true);
   await write.handler(write.def.inputSchema.parse({ path: "Inbox.md", content: "only vault" }));
   assert.equal(notes.get("two")!.get("Inbox.md"), "only vault");
+});
+
+test("app tools reach only vaults with the Obsidian app add-on, at their own container", async (t) => {
+  const calls: { url: string; auth: string | null; body: any }[] = [];
+  t.mock.method(globalThis, "fetch", async (rawUrl: string, options: RequestInit) => {
+    const url = new URL(rawUrl);
+    if (url.pathname === "/vaults") {
+      return Response.json({
+        vaults: [
+          { id: "one", name: "Research", source: "official", scopePath: "/" },
+          { id: "two", name: "Notes", source: "livesync", scopePath: "/", app: true }
+        ]
+      });
+    }
+    calls.push({ url: rawUrl, auth: new Headers(options.headers).get("authorization"), body: JSON.parse(String(options.body)) });
+    return Response.json({ executed: "obsidian-linter:lint-file" });
+  });
+  const tools = obsidianTools(new VaultConnections("http://synthetic.invalid", "synthetic"));
+  const run = tools.find((tool) => tool.def.name === "obsidian_app_run_command")!;
+
+  process.env.OBSIDIAN_APP_TOKEN = "app-secret";
+  process.env.OBSIDIAN_APP_HOST_PREFIX = "test-";
+  t.after(() => {
+    delete process.env.OBSIDIAN_APP_TOKEN;
+    delete process.env.OBSIDIAN_APP_HOST_PREFIX;
+  });
+
+  // two vaults, but only one has the app, so the id can be left out
+  await run.handler(run.def.inputSchema.parse({ id: "obsidian-linter:lint-file", path: "/Notes/a.md" }));
+  assert.deepEqual(calls, [
+    {
+      url: "http://test-obsidian-two-app:7310/command",
+      auth: "Bearer app-secret",
+      body: { id: "obsidian-linter:lint-file", path: "Notes/a.md" }
+    }
+  ]);
+
+  await assert.rejects(
+    run.handler(run.def.inputSchema.parse({ vault_id: "one", id: "obsidian-linter:lint-file" })),
+    /isn't enabled for 'one'\. Vaults with it: two/
+  );
+
+  delete process.env.OBSIDIAN_APP_TOKEN;
+  await assert.rejects(
+    run.handler(run.def.inputSchema.parse({ id: "obsidian-linter:lint-file" })),
+    /OBSIDIAN_APP_TOKEN/
+  );
+  assert.equal(calls.length, 1);
 });

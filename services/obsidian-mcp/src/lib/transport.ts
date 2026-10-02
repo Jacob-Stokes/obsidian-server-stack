@@ -99,6 +99,12 @@ export interface StartMcpOptions {
    * place to put it (vs. hoping the model decides to call a tool first).
    */
   instructions?: string | (() => string | Promise<string>);
+  /**
+   * Which tools to list to a client, decided when it connects (e.g. tools
+   * for an optional add-on only when it's on). Unlisted tools still answer
+   * if called, so their handlers must cope with the feature being off.
+   */
+  listTools?: () => Promise<(toolName: string) => boolean>;
 }
 
 function json(res: ServerResponse, status: number, body: any, headers: Record<string, string> = {}) {
@@ -107,7 +113,7 @@ function json(res: ServerResponse, status: number, body: any, headers: Record<st
 }
 
 export async function startMcp(opts: StartMcpOptions): Promise<void> {
-  const { name, version = "0.1.0", port, bearerToken, tools, onBackendError, oauth, instructions } = opts;
+  const { name, version = "0.1.0", port, bearerToken, tools, onBackendError, oauth, instructions, listTools } = opts;
 
   if (!bearerToken) throw new Error(`startMcp: bearerToken required for '${name}'`);
 
@@ -185,13 +191,14 @@ export async function startMcp(opts: StartMcpOptions): Promise<void> {
   // so each new client sees what's true when it connects.
   const buildServer = async (): Promise<Server> => {
     const text = typeof instructions === "function" ? await instructions() : instructions;
+    const listed = listTools ? await listTools() : () => true;
     const server = new Server(
       { name, version },
       { capabilities: { tools: {} }, ...(text ? { instructions: text } : {}) },
     );
 
     server.setRequestHandler(ListToolsRequestSchema, async () => ({
-      tools: tools.map((t) => ({
+      tools: tools.filter((t) => listed(t.def.name)).map((t) => ({
         name: t.def.name,
         description: t.def.description,
         inputSchema: zodToJsonSchema(t.def.inputSchema),

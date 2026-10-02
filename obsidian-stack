@@ -30,8 +30,11 @@ Usage: obsidian-stack [--dir PATH] [command]
   setup-uri [ID] [--url]
                       Setup URI for a self-hosted LiveSync vault's devices
                       (--url: change the address devices connect to)
-  logs TARGET [-f]    logs for a vault id, or api | mcp | couchdb
-  restart TARGET      restart a vault's sync, api | mcp | couchdb, or all
+  logs TARGET [-f]    logs for a vault id, app:ID, or api | mcp | couchdb
+  restart TARGET      restart a vault's sync, app:ID, api | mcp | couchdb, or all
+  app [status]        optional Obsidian app add-on, per vault:
+  app enable|disable ID
+  app run ID COMMAND  run an Obsidian CLI command in a vault's app
   update              git pull, rebuild and restart everything
   uninstall [--yes]   remove this install's containers, images and command;
                       notes are kept unless asked (--yes: no prompts, keep data)
@@ -583,6 +586,9 @@ remove_vault() {
   if [ -n "$(sync_dir "$src")" ] && [ -f "state/$id/sync.env" ]; then
     vc "$id" "$src" down -v --remove-orphans >/dev/null 2>&1 || true
   fi
+  if app_on "$id" && [ -f "state/$id/app.env" ]; then
+    ac "$id" down -v --remove-orphans >/dev/null 2>&1 || true
+  fi
   reg remove "$id"
   ok "removed '$id'. Its notes are still in vaults/$id/ and its sync settings in"
   echo "    state/$id/ — delete those yourself once you're sure."
@@ -604,6 +610,179 @@ ensure_all_up() {
     esac
     ok "sync running for '$id' ($(source_label "$src"))"
   done <<< "$(reg list)"
+  for id in $(reg apps); do
+    [ -f "state/$id/app.env" ] || continue
+    # recreated, not just started: server.py is mounted as a single file, and
+    # a git pull replaces it, which a running container wouldn't see
+    ac "$id" up -d --remove-orphans --force-recreate >/dev/null 2>&1 && ok "Obsidian app running for '$id'"
+  done
+}
+
+# --- Obsidian app add-on (extras/obsidian-app) -------------------------------
+#
+# Optional, per vault: the full Obsidian desktop app in a browser tab, plus a
+# small service through which obsidian-mcp runs Obsidian commands and manages
+# community plugins via the official Obsidian CLI. The app opens the vault
+# folder and doesn't sync; the vault's own sync keeps the folder current.
+
+ac() {
+  local id="$1"; shift
+  docker compose -p "${P}obsidian-${id}-app" --project-directory extras/obsidian-app \
+    -f extras/obsidian-app/docker-compose.yml --env-file "state/$id/app.env" "$@"
+}
+
+app_on() { reg apps | grep -qx "$1"; }
+
+# obsidian <args> in the vault's app, through the CLI service's guard
+app_cli() {
+  local id="$1"; shift
+  docker exec -u 1000:1000 "${P}obsidian-${id}-app" /lsiopy/bin/python3 /cli/server.py run "$@"
+}
+
+app_env() { grep "^$2=" "state/$1/app.env" 2>/dev/null | cut -d= -f2- | tr -d '"'; }
+
+next_app_port() {
+  local port=7300 f used
+  used="$(cat state/*/app.env 2>/dev/null | sed -n 's/^APP_PORT="\{0,1\}\([0-9]*\).*/\1/p')"
+  while grep -qx "$port" <<< "$used" || ss -ltn 2>/dev/null | awk '{print $4}' | grep -q ":$port\$"; do
+    port=$((port + 1))
+  done
+  echo "$port"
+}
+
+vault_src() { reg list | awk -F'\t' -v i="$1" '$1==i { print $2 }'; }
+
+app_enable() {
+  local id="${1:-}" f port ans token_new="" cfg _
+  [ -n "$id" ] || { vault_rows; echo; ask "  Vault id: " id; }
+  [ -n "$(vault_src "$id")" ] || die "no vault '$id'"
+  say "Obsidian app for '$id'"
+  cat <<'EOF'
+  The full Obsidian app runs on this server for this vault, in a browser tab,
+  and the MCP gains tools to run Obsidian commands, including community
+  plugins' commands, and to install and enable plugins.
+    + Plugins such as Linter or Templater work on the server's copy
+    + The real app from any browser, looking at the same synced vault
+    - About 350 MB of RAM while idle, more while open in a browser
+    - A 1.3 GB image (LinuxServer.io's Obsidian image, pulled from them)
+  It doesn't sync by itself: the vault's own sync keeps the folder current.
+EOF
+
+  # one token for every app in this install, shared with obsidian-mcp
+  if [ -z "${OBSIDIAN_APP_TOKEN:-}" ]; then
+    set_env .env OBSIDIAN_APP_TOKEN "$(openssl rand -hex 32)"
+    load_env; token_new=1
+    ok "generated OBSIDIAN_APP_TOKEN"
+  fi
+  # the core network must have its fixed name (installs from before the
+  # add-on get it here); recreating obsidian-mcp also picks up the token
+  if [ -n "$token_new" ] || ! docker network inspect "${P}obsidian-internal" >/dev/null 2>&1; then
+    docker compose up -d >/dev/null 2>&1 || die "couldn't restart the core stack (try: $ME update)"
+    ok "obsidian-mcp updated for the app add-on"
+  fi
+
+  f="state/$id/app.env"
+  mkdir -p "state/$id/app/.config/obsidian"
+  [ -f "$f" ] || { : > "$f"; chmod 600 "$f"; }
+  set_env "$f" INSTANCE_PREFIX "$P" force
+  set_env "$f" STACK_ID "$STACK_ID" force
+  set_env "$f" VAULT_ID "$id" force
+  set_env "$f" VAULT_DIR "$ROOT/vaults/$id" force
+  set_env "$f" STATE_DIR "$ROOT/state/$id" force
+  set_env "$f" OBSIDIAN_APP_TOKEN "$OBSIDIAN_APP_TOKEN" force
+  set_env "$f" TZ "${OBSIDIAN_TIMEZONE:-UTC}"
+  set_env "$f" APP_USER obsidian
+  set_env "$f" APP_COMMANDS "*"
+  if [ -z "$(app_env "$id" APP_PASSWORD)" ]; then set_env "$f" APP_PASSWORD "$(openssl rand -hex 12)"; fi
+  if [ -z "$(app_env "$id" APP_PORT)" ]; then
+    port="$(next_app_port)"
+    ask "  Port for the browser UI (on localhost) [$port]: " ans
+    set_env "$f" APP_PORT "${ans:-$port}" force
+  fi
+
+  # Open the vault on first start, with the CLI switched on: the same two
+  # settings Obsidian's own vault picker and Settings toggle write.
+  cfg="state/$id/app/.config/obsidian/obsidian.json"
+  [ -f "$cfg" ] || printf '{"vaults":{"%s":{"path":"/vault","ts":%s000,"open":true}},"cli":true}\n' "$id" "$(date +%s)" > "$cfg"
+  own -R "state/$id/app"
+
+  # git sync would otherwise commit the app's open-tabs state every minute
+  if [ -d "vaults/$id/.git/info" ] && ! grep -qx '.obsidian/workspace.json' "vaults/$id/.git/info/exclude" 2>/dev/null; then
+    printf '%s\n' .obsidian/workspace.json .obsidian/workspace-mobile.json >> "vaults/$id/.git/info/exclude"
+  fi
+
+  echo "  Starting (the first time downloads the 1.3 GB image)..."
+  ac "$id" up -d --remove-orphans >/dev/null 2>&1 || { ac "$id" up -d --remove-orphans; die "the app didn't start"; }
+  printf '  waiting for Obsidian to open the vault'
+  for _ in $(seq 1 90); do
+    docker exec -u 1000:1000 "${P}obsidian-${id}-app" /lsiopy/bin/python3 /cli/server.py health >/dev/null 2>&1 && break
+    printf '.'; sleep 2
+  done
+  echo
+  docker exec -u 1000:1000 "${P}obsidian-${id}-app" /lsiopy/bin/python3 /cli/server.py health >/dev/null 2>&1 \
+    || die "Obsidian didn't start — check: $ME logs app:$id"
+  reg set-app "$id" on
+  ok "Obsidian is running for '$id'"
+
+  if [ "$(app_cli "$id" plugins:restrict 2>/dev/null)" = on ]; then
+    cat <<'EOF'
+
+  Obsidian starts vaults in restricted mode, where community plugins don't
+  run. Turning it off lets plugins in this vault's .obsidian folder, and any
+  installed through the MCP, run on this server.
+EOF
+    ask "  Turn restricted mode off now? [y/N] " ans
+    case "$ans" in
+      [yY]*) app_cli "$id" plugins:restrict off >/dev/null && ok "restricted mode is off; community plugins can run" ;;
+      *) echo "  Left on. Later: $ME app run $id plugins:restrict off" ;;
+    esac
+  fi
+  app_show "$id"
+}
+
+app_show() {
+  local id="$1"
+  cat <<EOF
+
+  Browser UI:  http://localhost:$(app_env "$id" APP_PORT)  (on this server only)
+  Login:       $(app_env "$id" APP_USER) / APP_PASSWORD in state/$id/app.env
+  From another machine, tunnel it: ssh -L $(app_env "$id" APP_PORT):localhost:$(app_env "$id" APP_PORT) <this server>
+  MCP tools:   obsidian_app_commands, obsidian_app_run_command, obsidian_app_plugins
+EOF
+}
+
+app_disable() {
+  local id="${1:-}"
+  [ -n "$id" ] || ask "  Vault id: " id
+  app_on "$id" || { echo "  The app isn't enabled for '$id'."; return; }
+  [ -f "state/$id/app.env" ] && ac "$id" down -v --remove-orphans >/dev/null 2>&1 || true
+  reg set-app "$id" off
+  ok "stopped the Obsidian app for '$id'. Its settings stay in state/$id/app/."
+}
+
+cmd_app() {
+  require_installed
+  local sub="${1:-status}"; [ $# -gt 0 ] && shift
+  case "$sub" in
+    enable) app_enable "${1:-}" ;;
+    disable) app_disable "${1:-}" ;;
+    run)
+      [ $# -ge 2 ] || die "usage: $ME app run <vault id> <obsidian cli command> [args]"
+      app_on "$1" || die "the app isn't enabled for '$1'"
+      local id="$1"; shift
+      app_cli "$id" "$@"
+      ;;
+    status)
+      local id any=""
+      for id in $(reg apps); do
+        any=1
+        printf '  %-20s %s\n' "$id" "$(dot "$(ours app "$id" | head -1)")"
+        app_show "$id" | sed -n '2,3p'
+      done
+      [ -n "$any" ] || echo "  No vault has the Obsidian app. Add it with: $ME app enable <vault id>"
+      ;;
+    *) die "usage: $ME app <status | enable [id] | disable [id] | run <id> <command...>>" ;;
+  esac
 }
 
 # --- commands ----------------------------------------------------------------
@@ -655,6 +834,8 @@ $(echo "$foreign" | tr ' ' '\n' | sed '/^$/d;s/^/    /')
   say "Starting obsidian-api and obsidian-mcp"
   # --remove-orphans cleans up containers from older versions of this stack.
   docker compose up -d --build --remove-orphans
+  # the core network had a generated name before it got a fixed one
+  docker network rm "${P}obsidian-server-stack_obsidian-net" >/dev/null 2>&1 || true
   reg init
   local up="" _
   printf '  waiting for obsidian-mcp'
@@ -733,6 +914,10 @@ cmd_status() {
 
   say "Vaults"
   vault_rows counts
+  local a
+  for a in $(reg apps); do
+    printf '  %-20s %-43s %s\n' "$a" "Obsidian app on localhost:$(app_env "$a" APP_PORT)" "$(dot "$(ours app "$a" | head -1)")"
+  done
 
   # containers labelled as ours whose vault is no longer in the registry
   local known orphan v
@@ -749,6 +934,7 @@ target_container() {
     api) ours core | grep -x "${P}obsidian-api" || true ;;
     mcp) ours core | grep -x "${P}obsidian-mcp" || true ;;
     couchdb) ours couchdb | head -1 ;;
+    app:*) ours app "${1#app:}" | head -1 ;;
     *) ours sync "$1" | head -1 ;;
   esac
 }
@@ -756,7 +942,7 @@ target_container() {
 cmd_logs() {
   require_installed
   local target="${1:-}" follow="" c src
-  [ -n "$target" ] || die "usage: $ME logs <vault id | api | mcp | couchdb> [-f]"
+  [ -n "$target" ] || die "usage: $ME logs <vault id | app:<id> | api | mcp | couchdb> [-f]"
   [ "${2:-}" = "-f" ] && follow="-f"
   src="$(reg list | awk -F'\t' -v i="$target" '$1==i { print $2 }')"
   if [ "$src" = none ]; then echo "  '$target' has no sync, so there are no sync logs."; return; fi
@@ -773,6 +959,9 @@ cmd_restart() {
     api) docker compose restart obsidian-api >/dev/null 2>&1; ok "restarted api" ;;
     mcp) docker compose restart obsidian-mcp >/dev/null 2>&1; ok "restarted mcp" ;;
     couchdb) ( cd sync/couchdb && docker compose restart couchdb >/dev/null 2>&1 ); ok "restarted couchdb" ;;
+    app:*)
+      app_on "${target#app:}" || die "the app isn't enabled for '${target#app:}'"
+      ac "${target#app:}" restart >/dev/null 2>&1; ok "restarted the Obsidian app for '${target#app:}'" ;;
     all)
       docker compose restart >/dev/null 2>&1; ok "restarted api and mcp"
       [ -n "$(ours couchdb)" ] && { ( cd sync/couchdb && docker compose restart couchdb >/dev/null 2>&1 ); ok "restarted couchdb"; }
@@ -820,8 +1009,12 @@ cmd_uninstall() {
     case "$ans" in [yY]*) ;; *) echo "  Nothing removed."; return ;; esac
   fi
 
-  # each vault's sync, including its local sync database volume
+  # each vault's sync, including its local sync database volume, and any
+  # Obsidian app add-ons
   if docker image inspect "${P}obsidian-api:local" >/dev/null 2>&1; then
+    for id in $(reg apps 2>/dev/null); do
+      [ -f "state/$id/app.env" ] && ac "$id" down -v --remove-orphans >/dev/null 2>&1 && ok "removed the Obsidian app for '$id'"
+    done
     while IFS=$'\t' read -r id src name; do
       [ -n "$id" ] && [ -n "$(sync_dir "$src")" ] && [ -f "state/$id/sync.env" ] || continue
       vc "$id" "$src" down -v --remove-orphans >/dev/null 2>&1 && ok "removed sync for '$id'"
@@ -925,6 +1118,7 @@ case "$cmd" in
   uninstall) cmd_uninstall "$@" ;;
   endpoint) cmd_endpoint "$@" ;;
   setup-uri) cmd_setup_uri "$@" ;;
+  app) cmd_app "$@" ;;
   link) cmd_link "$@" ;;
   help|-h|--help) usage ;;
   *) usage; exit 1 ;;

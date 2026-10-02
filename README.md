@@ -84,6 +84,7 @@ To give CouchDB an HTTPS address, `sync/couchdb` has optional profiles for [Tail
 | `obsidian-stack status` | Core containers, and each vault's sync state and note count |
 | `obsidian-stack vaults` | List vaults |
 | `obsidian-stack add` / `remove [id]` | Add a vault, or remove one (its files are kept) |
+| `obsidian-stack app enable\|disable <id>` | The optional Obsidian app for a vault (below) |
 | `obsidian-stack setup-uri <id> [--url]` | Setup URI for a self-hosted LiveSync vault's devices; `--url` changes the address they connect to |
 | `obsidian-stack logs <id\|api\|mcp\|couchdb> [-f]` | Logs for a vault's sync or a core container |
 | `obsidian-stack restart <id\|api\|mcp\|couchdb\|all>` | Restart one part, or everything |
@@ -93,6 +94,18 @@ To give CouchDB an HTTPS address, `sync/couchdb` has optional profiles for [Tail
 | `obsidian-stack uninstall [--yes]` | Remove the install's containers, images and command; notes are kept unless chosen |
 
 The command always acts on the install it belongs to: the folder it lives in (following the link on the PATH), or one given with `--dir` or `$OBSIDIAN_STACK_DIR`. Every container the stack creates carries a Docker label with the install's `STACK_ID` from `.env`, and the command finds containers by that label rather than by name, so other Obsidian containers on the machine are never affected.
+
+## Obsidian app (optional)
+
+Everything above works on plain markdown files, with no Obsidian app on the server. Some things only the app can do: running community plugins such as [Linter](https://github.com/platers/obsidian-linter) or [Templater](https://github.com/SilentVoid13/Templater), or any command from the command palette. For those, `obsidian-stack app enable <id>` adds the full Obsidian app for one vault:
+
+- **In a browser tab:** [LinuxServer.io's Obsidian image](https://docs.linuxserver.io/images/docker-obsidian/) runs the desktop app on the server, at `http://localhost:7300` behind a generated login (in `state/<id>/app.env`). Like the MCP, it listens on localhost only.
+- **Driven by the MCP:** a small service in the same container runs commands through the [official Obsidian CLI](https://obsidian.md/help/cli). Three tools appear for vaults with the app: `obsidian_app_commands` (list commands, including plugins' commands), `obsidian_app_run_command` (run one, optionally on a given note) and `obsidian_app_plugins` (list, install, enable and disable community plugins).
+- **Same files, no extra sync:** the app opens `vaults/<id>/` and doesn't sync by itself. The vault's own sync keeps that folder current, and the app picks up changes on disk. Its own sync (LiveSync plugin or Obsidian Sync) is best left off, as it would be a second sync client on the same folder.
+
+Enabling it asks whether to turn off Obsidian's restricted mode, which otherwise keeps community plugins from running. Plugins are code from their authors, and with restricted mode off they run on the server with access to the vault. `APP_COMMANDS` in `state/<id>/app.env` limits which commands the MCP may run (for example `obsidian-linter:*,editor:*`); arbitrary JavaScript (`eval`) is never exposed. `obsidian-stack app run <id> <command>` runs any Obsidian CLI command directly, e.g. `plugins:restrict off`.
+
+It costs about 350 MB of RAM per vault while idle, more while the browser tab is open, plus a 1.3 GB image. If Obsidian exits, including when its window is closed in the browser, it is reopened within about 30 seconds.
 
 ## Running a second instance
 

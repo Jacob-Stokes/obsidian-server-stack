@@ -5,6 +5,17 @@ import { withVaultId } from "./lib/vault-input.js";
 // One MCP tool set across every vault in the registry. Each content tool
 // takes an explicit vault_id; obsidian_list_vaults is how a client finds them.
 
+import {
+  APP_COMMANDS_TOOL,
+  APP_PLUGINS_TOOL,
+  APP_RUN_COMMAND_TOOL,
+  AppCommandsInput,
+  AppPluginsInput,
+  AppRunCommandInput,
+  handleAppCommands,
+  handleAppPlugins,
+  handleAppRunCommand
+} from "./tools/app.js";
 import { ATTACHMENTS_TOOL, AttachmentsInput, handleAttachments } from "./tools/attachments.js";
 import { BULK_TOOL, BulkInput, handleBulk } from "./tools/bulk.js";
 import { DAILY_TOOL, DailyInput, handleDaily } from "./tools/daily.js";
@@ -57,6 +68,8 @@ const IDEMPOTENT_WRITE = {
   openWorldHint: false
 } as const;
 const MUTATING = { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false } as const;
+
+export const APP_TOOLS = new Set([APP_COMMANDS_TOOL.name, APP_RUN_COMMAND_TOOL.name, APP_PLUGINS_TOOL.name]);
 
 export function obsidianTools(connections: VaultConnections): ToolRegistration[] {
   return [
@@ -132,7 +145,37 @@ export function obsidianTools(connections: VaultConnections): ToolRegistration[]
     },
     {
       def: { ...STATUS_TOOL, inputSchema: withVaultId(StatusInput), annotations: READ_ONLY },
-      handler: async (i) => handleStatus(await connections.context(i.vault_id))
+      handler: async (i) => {
+        const ctx = await connections.context(i.vault_id);
+        const status = await handleStatus(ctx);
+        // Desktop commands are available exactly when the app add-on is on.
+        const vault = (await connections.list()).find((v) => v.id === ctx.client.vaultId);
+        status.capabilities.desktopCommands = vault?.app === true;
+        return status;
+      }
+    },
+
+    // The optional Obsidian app add-on. Listed only when a vault has it on
+    // (see APP_TOOLS and server.ts).
+    {
+      def: { ...APP_COMMANDS_TOOL, inputSchema: withVaultId(AppCommandsInput), annotations: READ_ONLY },
+      handler: async (i) => handleAppCommands(await connections.app(i.vault_id), i)
+    },
+    {
+      def: {
+        ...APP_RUN_COMMAND_TOOL,
+        inputSchema: withVaultId(AppRunCommandInput),
+        annotations: { ...MUTATING, openWorldHint: true }
+      },
+      handler: async (i) => handleAppRunCommand(await connections.app(i.vault_id), i)
+    },
+    {
+      def: {
+        ...APP_PLUGINS_TOOL,
+        inputSchema: withVaultId(AppPluginsInput),
+        annotations: { ...MUTATING, openWorldHint: true }
+      },
+      handler: async (i) => handleAppPlugins(await connections.app(i.vault_id), i)
     },
 
     // Compatibility aliases retained for existing agents and automations.

@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { addVault, availableVaults, readRegistry, registryPath, removeVault, suggestId } from "./registry.mjs";
+import { addVault, availableVaults, readRegistry, registryPath, removeVault, setApp, suggestId } from "./registry.mjs";
 import { createApi } from "./server.mjs";
 
 function fixture(t) {
@@ -118,4 +118,15 @@ test("notes can be moved into .trash (how deletes work), but .trash and .obsidia
   assert.equal((await post("/copy", { from: "Missing.md", to: ".trash/x.md" })).status, 400);
   assert.equal((await post("/move", { from: "Missing.md", to: "Sub/.trash/x.md" })).status, 400);
   assert.equal((await post("/move", { from: "Missing.md", to: ".obsidian/x.md" })).status, 400);
+});
+
+test("the app add-on flag is reported per vault and can be turned off again", async (t) => {
+  const { root } = fixture(t);
+  addVault(root, { id: "notes", name: "Notes", source: "livesync" });
+  addVault(root, { id: "work", name: "Work", source: "git" });
+  setApp(root, "notes", true);
+  assert.deepEqual(availableVaults(root).map((v) => [v.id, v.app]), [["notes", true], ["work", false]]);
+  setApp(root, "notes", false);
+  assert.equal("app" in readRegistry(root).vaults[0], false);
+  assert.throws(() => setApp(root, "missing", true), /No vault/);
 });
