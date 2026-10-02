@@ -86,6 +86,12 @@ To give CouchDB an HTTPS address, `sync/couchdb` has optional profiles for [Tail
 
 ## Managing
 
+<p align="center">
+  <img src="assets/installer.gif" alt="obsidian-stack installing the stack and adding a self-hosted LiveSync vault, sped up" width="720">
+  <br>
+  <sub>A full install with one self-hosted LiveSync vault, sped up.</sub>
+</p>
+
 `obsidian-stack` manages one install: adding and removing vaults, checking sync, reading logs. Run with no arguments, it opens an interactive menu.
 
 | Command | Does |
