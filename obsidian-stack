@@ -189,7 +189,9 @@ pull() {
 AWK_LIVE=""; awk -W version 2>/dev/null | grep -qi mawk && AWK_LIVE="-W interactive"
 
 # The logo: a two-tone diamond with sync arrows, as in the README.
+BANNER_SHOWN=""
 banner() {
+  BANNER_SHOWN=1
   [ -n "$TTY" ] || { printf '\nobsidian-server-stack\n'; return; }
   BN_L1=$'\033[38;5;141m' BN_R1=$'\033[38;5;135m' BN_L2=$'\033[38;5;98m' BN_R2=$'\033[38;5;56m'
   BN_W1=$'\033[1;97;48;5;141m' BN_X1=$'\033[1;97;48;5;135m' BN_W2=$'\033[1;97;48;5;98m' BN_X2=$'\033[1;97;48;5;56m'
@@ -1863,6 +1865,9 @@ cmd_menu() {
   [ -n "${OBSIDIAN_STACK_NO_MENU:-}${NONINTERACTIVE}" ] && return 0
   require_installed
   local choice target
+  # the banner, with its arrows spinning while the menu waits (once: an
+  # install that ends in the menu has shown it already)
+  [ -n "$BANNER_SHOWN" ] || banner
   while :; do
     say "Vaults ${C_DIM}$ROOT${C_0}"
     vault_rows
