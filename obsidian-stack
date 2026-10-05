@@ -146,7 +146,7 @@ pull() {
   printf '  %s%s%s Downloading %s  %schecking size…%s' "$C_ACC" "${SPIN[0]}" "$C_0" "$label" "$C_DIM" "$C_0"
   if [ -n "$arch" ]; then
     total="$(timeout 20 docker manifest inspect -v "$image" 2>/dev/null | awk -v a="\"architecture\": \"$arch\"" '
-      index($0, a) {f=1} f && /"layers"/ {l=1} l && /"size"/ {gsub(/[^0-9]/, ""); s += $0} l && /\]/ {print s+0; exit}')"
+      index($0, a) {f=1} f && /"layers"/ {l=1} l && /"size"/ {gsub(/[^0-9]/, ""); s += $0} l && /\]/ {print s+0; exit}')" || total=0
   fi
   printf '\033[?25l'
   local repo="${image%:*}" tag="${image##*:}"
