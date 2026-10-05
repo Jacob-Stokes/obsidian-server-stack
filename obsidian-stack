@@ -1065,6 +1065,9 @@ remove_vault() {
   dc rm -sf "$id-app" >/dev/null 2>&1 || true
   reg remove "$id"
   write_compose
+  # anything the vault alone needed (CouchDB, with no self-hosted LiveSync
+  # vault left) is no longer in the project: take it down too
+  dc up -d --remove-orphans >>"$LOG" 2>&1 || warn "couldn't tidy up the stack's containers: $ME status"
   ok "Removed '$id'"
   info "Its notes are still in vaults/$id/ and its settings in state/$id/; delete them once sure."
 }
