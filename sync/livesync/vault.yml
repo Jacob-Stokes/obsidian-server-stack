@@ -6,9 +6,9 @@
 ## local database in state/@ID@/livesync-db.
   @ID@-sync-init:
     build:
-      context: https://github.com/vrtmrz/obsidian-livesync.git#1.0.34
+      context: https://github.com/vrtmrz/obsidian-livesync.git#1.0.35
       dockerfile: src/apps/cli/Dockerfile
-    image: @P@obsidian-livesync-client:1.0.34
+    image: @P@obsidian-livesync-client:1.0.35
     container_name: @P@obsidian-@ID@-livesync-init
     labels:
       obsidian-server-stack.id: "@STACK_ID@"
@@ -21,7 +21,7 @@
       - ./state/@ID@/livesync-db:/data
     network_mode: none
   @ID@-sync:
-    image: @P@obsidian-livesync-client:1.0.34
+    image: @P@obsidian-livesync-client:1.0.35
     container_name: @P@obsidian-@ID@-livesync
     labels:
       obsidian-server-stack.id: "@STACK_ID@"
