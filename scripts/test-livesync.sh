@@ -9,6 +9,9 @@
 #   3. a note each way: device → server, server → device
 #   4. the device locks the database, as a rebuild does; status must say so,
 #      and `obsidian-stack resync` must get the server syncing again
+#   5. CouchDB listens on this machine only by default; the address step
+#      with what's already on a machine (a stand-in Tailscale, a busy port
+#      80, an existing proxy)
 set -euo pipefail
 
 SRC="$(cd "$(dirname "$0")/.." && pwd)"
@@ -16,6 +19,22 @@ WORK="$(mktemp -d)"
 STACK="$WORK/stack"
 DEVICE="$WORK/device"
 PREFIX=ci-
+# A stand-in for this machine's Tailscale, first on PATH for the whole run,
+# so no test can change the real one (its serve routes): on a tailnet, with
+# 443 already served; anything else it is asked is logged to serve.log.
+mkdir -p "$WORK/fakebin"
+# a stand-in for this machine's Tailscale: on a tailnet, 443 already served
+cat > "$WORK/fakebin/tailscale" <<EOF
+#!/bin/sh
+case "\$*" in
+  "ip -4") echo 100.64.0.9 ;;
+  "status --json") echo '{"Self":{"DNSName":"box.tail1234.ts.net."}}' ;;
+  "serve status --json") echo '{"TCP":{"443":{"HTTPS":true}}}' ;;
+  *) echo "\$*" >> "$WORK/fakebin/serve.log" ;;
+esac
+EOF
+chmod +x "$WORK/fakebin/tailscale"
+export PATH="$WORK/fakebin:$PATH"
 pass() { printf '  \033[32mPASS\033[0m %s\n' "$1"; }
 fail() { printf '  \033[31mFAIL\033[0m %s\n' "$1"; exit 1; }
 wait_for() {
@@ -26,9 +45,11 @@ wait_for() {
   fail "$what"
 }
 
+couchdb_up() { [ "$(docker inspect -f '{{.State.Health.Status}}' "${PREFIX}obsidian-couchdb" 2>/dev/null)" = healthy ]; }
+
 cleanup() {
   docker rm -f "${PREFIX}device" >/dev/null 2>&1 || true
-  [ -x "$STACK/obsidian-stack" ] && "$STACK/obsidian-stack" uninstall --yes >/dev/null 2>&1 || true
+  [ -x "$STACK/obsidian-stack" ] && "$STACK/obsidian-stack" uninstall --yes >>"${CLEANUP_LOG:-/dev/null}" 2>&1 || echo "cleanup: uninstall failed ($?)" >>"${CLEANUP_LOG:-/dev/null}"
   docker volume ls -q | grep "^${PREFIX}" | xargs -r docker volume rm >/dev/null 2>&1 || true
   rm -rf "$WORK"
 }
@@ -76,7 +97,7 @@ docker run --rm -u 1000:1000 -v "$DEVICE/data:/data" --entrypoint node "$IMAGE" 
 docker run -d --name "${PREFIX}device" --network "${PREFIX}obsidian-livesync" -u 1000:1000 \
   -v "$DEVICE/data:/data" -v "$DEVICE/vault:/vault" -e LIVESYNC_DB_PATH=/data \
   --entrypoint livesync-cli "$IMAGE" --settings /data/.livesync/settings.json --vault /vault daemon >/dev/null
-wait_for "the device starts syncing" 60 sh -c "docker logs ${PREFIX}device 2>&1 | grep -q 'LiveSync active'"
+wait_for "the device starts syncing" 120 sh -c "docker logs ${PREFIX}device 2>&1 | grep -q 'LiveSync active'"
 pass "device set up from the Setup URI"
 
 echo "== notes both ways"
@@ -100,5 +121,28 @@ recovered() { ./obsidian-stack status --json | python3 -c 'import json,sys; v=js
 wait_for "the worker syncs again after resync" 30 recovered
 for f in "From device.md" "From server.md"; do test -f "vaults/notes/$f" || fail "'$f' is back on the server after resync"; done
 pass "resync recovered, both notes present"
+
+echo "== where CouchDB listens, and the address step"
+[ "$(docker port "${PREFIX}obsidian-couchdb" 5984 | head -1)" = "127.0.0.1:5995" ] || fail "CouchDB listens where COUCHDB_PORT says (this machine only)"
+grep -q '^COUCHDB_PORT=127.0.0.1:5984$' "$SRC/sync/couchdb/.env.example" && grep -q 'COUCHDB_PORT:-127.0.0.1:5984' "$SRC/sync/couchdb/docker-compose.yml" \
+  || fail "the default is this machine only"
+pass "CouchDB is on this machine only by default"
+./obsidian-stack address --yes --https host-tailscale --tailscale-serve yes </dev/null >"$WORK/address.log" 2>&1 \
+  || { tail -20 "$WORK/address.log"; fail "address: this machine's Tailscale"; }
+grep -q '^COUCHDB_DEVICE_URL="https://box.tail1234.ts.net:10443"' sync/couchdb/.env || fail "device address via tailscale serve: $(grep DEVICE_URL sync/couchdb/.env)"
+grep -q -- '--https=10443 http://127.0.0.1:5995' "$WORK/fakebin/serve.log" || fail "tailscale serve route: $(cat "$WORK/fakebin/serve.log")"
+wait_for "CouchDB back after the address change" 45 couchdb_up
+pass "this machine's Tailscale: tailscale serve on a free port, no extra container"
+./obsidian-stack address --yes --https proxy --device-url https://couch.example.com </dev/null >"$WORK/address.log" 2>&1 \
+  || { tail -20 "$WORK/address.log"; fail "address: an existing proxy"; }
+grep -q '127.0.0.1:5995' state/couchdb/proxy-example.txt 2>/dev/null || fail "a proxy snippet for CouchDB"
+grep -q -- '--https=10443 off' "$WORK/fakebin/serve.log" || fail "the old tailscale serve route is removed"
+pass "an existing reverse proxy: a config snippet, and the old tailscale serve route removed"
+python3 -m http.server 80 --bind 127.0.0.1 >/dev/null 2>&1 & held=$!
+sleep 1
+out="$(./obsidian-stack address --yes --https caddy --domain couch.example.com </dev/null 2>&1)" && { kill $held; fail "the stack's Caddy is refused when 80/443 are taken"; }
+kill $held
+grep -q 'ports 80/443 are in use' <<<"$out" || fail "it says why: $out"
+pass "ports 80/443 already taken: the stack's own Caddy is refused, with the alternative"
 
 echo "== all passed"

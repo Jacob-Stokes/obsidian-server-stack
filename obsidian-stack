@@ -279,6 +279,7 @@ Usage: obsidian-stack [--dir PATH] [command]
   rename ID NAME      change a vault's display name (its id stays)
   resync ID           LiveSync: fetch the vault again (after a device rebuilt it)
   remove [ID]         remove a vault (its files are kept)
+  address           how devices reach CouchDB (LiveSync): HTTPS, Tailscale, a proxy…
   setup-uri [ID] [--url]
                       Setup URI for a self-hosted LiveSync vault's devices
                       (--url: change the address devices connect to)
@@ -705,21 +706,220 @@ import_server_uri() {
   ok "Configured the server's LiveSync client ${C_DIM}(end-to-end encrypted)${C_0}"
 }
 
-device_url() {
-  local cur ans
-  cur="$(couchdb_env COUCHDB_DEVICE_URL)"
-  if [ -z "$cur" ] || [ -n "${1:-}" ]; then
-    [ -n "$cur" ] || cur="http://$(hostname -I 2>/dev/null | awk '{print $1}'):$(couchdb_env COUCHDB_PORT)"
-    para >&2 <<EOF
-The address devices use to reach CouchDB goes into their Setup URI.
-Desktop Obsidian accepts http://. Obsidian on iOS and Android only
-connects over https://, even across Tailscale or a home network, so
-phones need an HTTPS address: see "Phones and HTTPS" in the README.
-${C_DIM}Change it later with: $ME setup-uri <vault> --url${C_0}
+# --- what's already on this machine ---------------------------------------------
+# So the address step can offer to use it, rather than run a second one.
+
+# what listens on ports 80/443 (a process name, or "something"), if not ours
+ports_web_taken() {
+  local who
+  docker container inspect "${P}obsidian-couchdb-caddy" >/dev/null 2>&1 && [ "$(docker inspect -f '{{.State.Running}}' "${P}obsidian-couchdb-caddy")" = true ] && return 1
+  who="$(ss -ltnpH '( sport = :80 or sport = :443 )' 2>/dev/null | sed -n 's/.*users:(("\([^"]*\)".*/\1/p' | sort -u | paste -sd, -)"
+  [ -n "$who" ] || who="$(ss -ltnH '( sport = :80 or sport = :443 )' 2>/dev/null | head -1 | grep -q . && echo something)"
+  [ -n "$who" ] && echo "$who"
+}
+# this machine's Tailscale: "IP NAME" (NAME is <machine>.<tailnet>.ts.net)
+host_tailscale() {
+  command -v tailscale >/dev/null 2>&1 || return 1
+  local ip name
+  ip="$(tailscale ip -4 2>/dev/null | head -1)"; [ -n "$ip" ] || return 1
+  name="$(tailscale status --json 2>/dev/null | sed -n 's/.*"DNSName": *"\([^"]*\)\.".*/\1/p' | head -1)"
+  echo "$ip ${name:-}"
+}
+# a cloudflared already running here (a service or a container), not ours
+host_cloudflared() {
+  pgrep -x cloudflared >/dev/null 2>&1 && ! docker container inspect "${P}obsidian-couchdb-cloudflared" >/dev/null 2>&1 && return 0
+  docker ps --format '{{.Image}} {{.Names}}' 2>/dev/null | grep -v " ${P}obsidian-couchdb-cloudflared$" | grep -q '^cloudflare/cloudflared'
+}
+# the first HTTPS port `tailscale serve` isn't using: 443, else 10443 upwards
+free_serve_port() {
+  local used p; used="$(tailscale serve status --json 2>/dev/null | grep -oE '"[0-9]+": *\{' | grep -oE '[0-9]+')"
+  for p in 443 $(seq 10443 10499); do grep -qx "$p" <<<"$used" || { echo "$p"; return; }; done
+}
+
+# CouchDB's settings live in sync/couchdb/.env; COMPOSE_PROFILES in the install's .env
+couch_set() { ( cd sync/couchdb && set_env .env "$1" "$2" force ); }
+# a CouchDB setting that may not be there yet (older .env files), without
+# tripping set -e / pipefail
+couch_get() { couchdb_env "$1" 2>/dev/null || true; }
+couch_port() { local v; v="$(couch_get COUCHDB_PORT)"; v="${v:-127.0.0.1:5984}"; echo "${v##*:}"; }
+couch_bind() { couch_set COUCHDB_PORT "$1:$(couch_port)"; }
+root_profile() {   # root_profile NAME on|off
+  local cur new p; cur="$(grep '^COMPOSE_PROFILES=' .env 2>/dev/null | cut -d= -f2- | tr -d '"' || true)"; new=""
+  for p in ${cur//,/ }; do [ "$p" = "$1" ] || new="${new:+$new,}$p"; done
+  [ "$2" = on ] && new="${new:+$new,}$1"
+  set_env .env COMPOSE_PROFILES "$new" force; export COMPOSE_PROFILES="$new"
+}
+
+couch_snippet() {
+  local kind="$1" host="$2" port f=state/couchdb/proxy-example.txt; port="$(couch_port)"
+  mkdir -p state/couchdb
+  case "$kind" in
+    *caddy*) printf '# Caddyfile: CouchDB for LiveSync\n%s {\n\treverse_proxy 127.0.0.1:%s\n}\n' "$host" "$port" > "$f" ;;
+    *nginx*) cat > "$f" <<EOF
+# nginx: CouchDB for LiveSync
+server {
+    server_name $host;
+    client_max_body_size 256M;
+    location / {
+        proxy_pass http://127.0.0.1:$port;
+        proxy_buffering off;
+    }
+    # plus your usual listen 443 ssl; and certificate lines
+}
 EOF
-    echo >&2
-    ask "Device address [$cur]: " ans device-url
-    ( cd sync/couchdb && set_env .env COUCHDB_DEVICE_URL "${ans:-$cur}" force )
+    ;;
+    cloudflared) printf '# cloudflared (config.yml ingress, above the catch-all rule), or the same\n# public hostname route in the Cloudflare dashboard:\n  - hostname: %s\n    service: http://localhost:%s\n' "$host" "$port" > "$f" ;;
+    *) printf '# Any reverse proxy: %s  →  http://127.0.0.1:%s (allow large request bodies, no buffering)\n' "$host" "$port" > "$f" ;;
+  esac
+  sed 's/^/    /' "$f"; info "(saved in $f)"
+  info "If the proxy runs in a container, 127.0.0.1 is the container itself: set COUCHDB_PORT in"
+  info "sync/couchdb/.env to an address of this machine it can reach."
+}
+
+# How devices reach CouchDB (LiveSync). Sets COUCHDB_DEVICE_URL, the profiles
+# and where CouchDB listens; prints the address.
+choose_couchdb_address() {
+  local choice def=1 web ts ts_ip ts_name cf lan
+  web="$(ports_web_taken || true)"; ts="$(host_tailscale || true)"; ts_ip="${ts%% *}"; ts_name="${ts#* }"; [ "$ts_name" = "$ts" ] && ts_name=""
+  cf=""; host_cloudflared && cf=1
+  lan="$(hostname -I 2>/dev/null | awk '{print $1}')"
+  say "Device address (CouchDB, for LiveSync)"
+  para >&2 <<'EOM'
+Devices sync with CouchDB at this address; it goes into their Setup URIs.
+Obsidian on phones only connects over https://, even across Tailscale or a
+home network; desktop Obsidian accepts http://.
+EOM
+  local found=""
+  [ -n "$web" ] && found+="  ${C_WARN}•${C_0} ports 80/443 are in use (${web}): a web server or proxy is already running"$'\n'
+  [ -n "$ts" ] && found+="  ${C_OK}•${C_0} this machine is on Tailscale (${ts_name:-$ts_ip})"$'\n'
+  [ -n "$cf" ] && found+="  ${C_OK}•${C_0} cloudflared is already running here"$'\n'
+  [ -n "$found" ] && { echo >&2; info "Found on this machine:" >&2; printf '%s' "$found" >&2; }
+  if [ -n "$ts" ]; then def=5; elif [ -n "$web" ]; then def=7; elif [ -n "$cf" ]; then def=6; fi
+  # a suggestion, for a person to accept: scripted runs (--yes) only act on --https
+  [ -n "$NONINTERACTIVE" ] && def=1
+  local x2="" x5="" x6="" x7=""
+  [ -n "$web" ] && x2=" ${C_WARN}(80/443 taken)${C_0}"
+  [ -n "$ts" ] && x5=" ${C_OK}(found)${C_0}"
+  [ -n "$cf" ] && x6=" ${C_OK}(found)${C_0}"
+  [ -n "$web" ] && x7=" ${C_OK}(found: $web)${C_0}"
+  cat >&2 <<EOM
+
+  ${C_DIM}New, run by this stack${C_0}
+  ${C_ACC}1${C_0}  ${C_B}This machine only${C_0}             http://127.0.0.1:$(couch_port) (desktop Obsidian on this machine, or an SSH tunnel)
+  ${C_ACC}2${C_0}  ${C_B}A domain, with HTTPS${C_0}          its own Caddy and Let's Encrypt; needs ports 80/443${x2}
+  ${C_ACC}3${C_0}  ${C_B}Tailscale, as its own machine${C_0} https://<name>.<tailnet>.ts.net
+  ${C_ACC}4${C_0}  ${C_B}A Cloudflare Tunnel${C_0}           its own tunnel; a domain on Cloudflare
+  ${C_DIM}Already on this machine${C_0}
+  ${C_ACC}5${C_0}  ${C_B}This machine's Tailscale${C_0}      HTTPS with tailscale serve, no extra container${x5}
+  ${C_ACC}6${C_0}  ${C_B}Its Cloudflare Tunnel${C_0}         one route to add to the tunnel you have${x6}
+  ${C_ACC}7${C_0}  ${C_B}Its reverse proxy${C_0}             Caddy, nginx, Traefik…: forward a domain here${x7}
+  ${C_ACC}8${C_0}  ${C_B}The home network, plain http${C_0}  http://${lan:-<this machine>}:$(couch_port): desktops only, and anyone on the network can reach it
+
+EOM
+  ask "Choice [$def]: " choice https
+  choice="${choice:-$def}"
+  for p in caddy tailscale cloudflare; do root_profile "$p" off; done
+  local url=""
+  case "$choice" in
+    1|none) couch_bind 127.0.0.1; url="http://127.0.0.1:$(couch_port)" ;;
+    2|caddy)
+      if [ -n "$web" ]; then
+        warn "Ports 80/443 are in use ($web); the stack's Caddy couldn't start. Option 7 uses what's there."
+        [ -z "$NONINTERACTIVE" ] || die "ports 80/443 are in use ($web): use --https proxy (or free them)"
+        local go; ask "Use Caddy anyway? [y/N] " go; case "$go" in [yY]*) ;; *) choose_couchdb_address; return ;; esac
+      fi
+      local d e; need domain "the domain"; ask "Domain (e.g. couch.example.com): " d domain; [ -n "$d" ] || die "a domain is needed"
+      ask "Email for Let's Encrypt (renewal notices): " e acme-email
+      couch_bind 127.0.0.1; root_profile caddy on; couch_set COUCHDB_DOMAIN "$d"; couch_set ACME_EMAIL "$e"; url="https://$d" ;;
+    3|tailscale)
+      local k h; ask_secret "Tailscale auth key (hidden; admin console → Settings → Keys): " k TS_AUTHKEY
+      [ -n "$k" ] || die "an auth key is needed (TS_AUTHKEY)"
+      ask "Machine name on the tailnet [livesync]: " h ts-hostname
+      couch_bind 127.0.0.1; root_profile tailscale on; couch_set TS_AUTHKEY "$k"; couch_set TS_HOSTNAME "${h:-livesync}"
+      info "Once it has joined, set its address: $ME setup-uri <vault> --url https://${h:-livesync}.<tailnet>.ts.net"
+      url="https://${h:-livesync}.<tailnet>.ts.net" ;;
+    4|cloudflare)
+      local t d; ask_secret "Tunnel token (hidden; Zero Trust → Networks → Tunnels): " t CF_TUNNEL_TOKEN
+      [ -n "$t" ] || die "a tunnel token is needed (CF_TUNNEL_TOKEN)"
+      need domain "the domain"; ask "Its public hostname (e.g. couch.example.com): " d domain
+      couch_bind 127.0.0.1; root_profile cloudflare on; couch_set CF_TUNNEL_TOKEN "$t"; url="https://$d"
+      info "In Cloudflare, route $d to http://${P}obsidian-couchdb:5984." ;;
+    5|host-tailscale)
+      [ -n "$ts" ] || die "Tailscale isn't running on this machine (tailscale ip -4 gives nothing)"
+      local ans port; ans=y
+      [ -n "$ts_name" ] && ask "Serve it over HTTPS with tailscale serve (phones need HTTPS)? [Y/n] " ans tailscale-serve
+      [ -n "$ts_name" ] || ans=n
+      case "$ans" in
+        [nN]*) couch_bind "$ts_ip"; url="http://$ts_ip:$(couch_port)"; warn "Plain http: desktop Obsidian only" ;;
+        *)
+          couch_bind 127.0.0.1
+          port="$(free_serve_port)"; [ -n "$port" ] || die "no free HTTPS port for tailscale serve"
+          [ "$port" = 443 ] || info "tailscale serve already uses 443 here; using port $port."
+          tailscale serve --bg --yes --https="$port" "http://127.0.0.1:$(couch_port)" >>"$LOG" 2>&1 \
+            || die "tailscale serve failed (see $LOG); as root, with Tailscale's HTTPS certificates enabled for the tailnet"
+          url="https://$ts_name"; [ "$port" = 443 ] || url="$url:$port"
+          couch_set TS_SERVE_PORT "$port"; ok "tailscale serve: $url" ;;
+      esac ;;
+    6|host-cloudflare)
+      local d; need domain "the hostname"; ask "Hostname to use (e.g. couch.example.com): " d domain; [ -n "$d" ] || die "a hostname is needed"
+      couch_bind 127.0.0.1; url="https://$d"; echo >&2; info "Add this route to your tunnel, then restart cloudflared:"; couch_snippet cloudflared "$d" >&2 ;;
+    7|proxy)
+      local u; need device-url "the public URL (--device-url)"; ask "Public URL (e.g. https://couch.example.com): " u device-url
+      [[ "$u" == http*://* ]] || die "the URL should start with https:// (or http://)"
+      couch_bind 127.0.0.1; url="${u%/}"; echo >&2; info "For your proxy (${web:-generic}):"
+      couch_snippet "${web:-generic}" "$(sed -E 's|^https?://||; s|/.*||' <<<"$u")" >&2 ;;
+    8|lan)
+      couch_bind 0.0.0.0; url="http://${lan:-127.0.0.1}:$(couch_port)"
+      warn "CouchDB now listens on every network this machine is on (password-protected)" ;;
+    *) die "not a choice: $choice" ;;
+  esac
+  couch_set COUCHDB_DEVICE_URL "$url"
+}
+
+# Apply a changed address to a running CouchDB, and clear a serve route no
+# longer used
+apply_couchdb_address() {
+  local old_port="$1" new_port; new_port="$(couch_get TS_SERVE_PORT)"
+  if [ -n "$old_port" ] && [ "$new_port" = "$old_port" ] && [[ "$(couch_get COUCHDB_DEVICE_URL)" != https://*.ts.net* ]]; then
+    tailscale serve --https="$old_port" off >>"$LOG" 2>&1 && ok "Removed the tailscale serve route on port $old_port"
+    couch_set TS_SERVE_PORT ""
+  fi
+  if docker container inspect "${P}obsidian-couchdb" >/dev/null 2>&1; then
+    load_env
+    # shellcheck disable=SC2046
+    step "Applying to CouchDB" dc --progress plain up -d couchdb \
+      $(dc config --services 2>/dev/null | grep -xE 'caddy|tailscale|cloudflared' || true) || die "CouchDB didn't restart: $ME logs couchdb"
+  fi
+}
+
+# obsidian-stack address: change how devices reach CouchDB (LiveSync)
+cmd_address() {
+  require_installed
+  [ -f sync/couchdb/.env ] || die "no self-hosted LiveSync vault, so there's no CouchDB address to set"
+  need https "the address (--https …)"
+  local old; old="$(couch_get TS_SERVE_PORT)"
+  choose_couchdb_address
+  apply_couchdb_address "$old"
+  say "Device address"
+  kv "CouchDB" "$(couch_get COUCHDB_DEVICE_URL)"
+  local ids; ids="$(reg list | awk -F'\t' '$2=="livesync" {print $1}')"
+  [ -n "$ids" ] && info "Devices need new Setup URIs for it: $(sed "s/^/$ME setup-uri /" <<<"$ids" | paste -sd'·' - | sed 's/·/  ·  /g')"
+  true
+}
+
+device_url() {
+  local cur old
+  cur="$(couch_get COUCHDB_DEVICE_URL)"
+  if [ -z "$cur" ] || [ -n "${1:-}" ]; then
+    if [ -n "${PRESET[device-url]:-}" ] && [ -z "${PRESET[https]:-}" ]; then
+      couch_set COUCHDB_DEVICE_URL "${PRESET[device-url]}"
+    elif [ -n "$NONINTERACTIVE" ] && [ -z "${PRESET[https]:-}" ] && [ -n "$cur" ]; then
+      :   # scripted, with no new address given: keep the current one
+    else
+      old="$(couch_get TS_SERVE_PORT)"
+      choose_couchdb_address >&2   # this function's output is the address, so the menu goes to stderr
+      apply_couchdb_address "$old" >&2
+    fi
   fi
   couchdb_env COUCHDB_DEVICE_URL
 }
@@ -1764,6 +1964,7 @@ cmd_uninstall() {
   [ -n "$STACK_ID" ] || die "no STACK_ID in .env, so there's nothing labelled as this install's"
   local yes="$NONINTERACTIVE" ans id src name c link
 
+  local serve_port; serve_port="$( [ -f sync/couchdb/.env ] && couch_get TS_SERVE_PORT || true)"
   say "Uninstall ($ROOT)"
   info "Removes everything labelled obsidian-server-stack.id=$STACK_ID:"
   docker ps -a --filter "label=$LABEL.id=$STACK_ID" --format '{{.Names}}' | sort | sed 's/^/    /'
@@ -1778,6 +1979,9 @@ cmd_uninstall() {
   # the whole compose project: core, every vault's sync and app, CouchDB,
   # the manager
   dc down --remove-orphans >/dev/null 2>&1 && ok "Removed the containers"
+  if [ -n "$serve_port" ] && command -v tailscale >/dev/null 2>&1; then
+    tailscale serve --https="$serve_port" off >/dev/null 2>&1 && ok "Removed the tailscale serve route (port $serve_port)"
+  fi
 
   # the shared CouchDB's databases are the only copy on this server of the
   # LiveSync vaults, so they're kept unless asked
@@ -1911,7 +2115,7 @@ parse_opts() {
     case "$1" in
       --yes|-y) NONINTERACTIVE=1; PRESET[confirm]=y ;;
       --json) JSON=1 ;;
-      --name|--source|--device-url|--app|--app-port|--plugins|--settings-sync|--plugin-changes|--git-repo|--official-vault|--reuse-login|--tail)
+      --name|--source|--device-url|--app|--app-port|--plugins|--settings-sync|--plugin-changes|--git-repo|--official-vault|--reuse-login|--tail|--https|--domain|--acme-email|--ts-hostname|--tailscale-serve)
         [ $# -ge 2 ] || die "$1 needs a value"
         key="${1#--}"; val="$2"
         case "$key" in
@@ -1954,6 +2158,7 @@ case "$cmd" in
   uninstall) cmd_uninstall "$@" ;;
   endpoint) cmd_endpoint "$@" ;;
   setup-uri) cmd_setup_uri "$@" ;;
+  address) cmd_address ;;
   licenses|licences|license|licence|notices) cmd_licenses "$@" ;;
   app) cmd_app "$@" ;;
   link) cmd_link "$@" ;;

@@ -18,7 +18,9 @@ Vaults are configured through Setup URIs rather than by entering the address, us
 
 ## HTTPS
 
-Obsidian on iOS and Android refuses `http://` addresses on every network, including a tailnet, so phones need CouchDB behind HTTPS. Three optional profiles provide it:
+Obsidian on iOS and Android refuses `http://` addresses on every network, including a tailnet, so phones need CouchDB behind HTTPS. CouchDB itself listens on this machine only (`COUCHDB_PORT=127.0.0.1:5984`).
+
+The easiest way to choose is `obsidian-stack address` (also asked when the first LiveSync vault is added). It checks what the machine already has and offers to use it: this machine's Tailscale with `tailscale serve` (HTTPS, no extra container), its Cloudflare Tunnel or its reverse proxy (a ready snippet, saved in `state/couchdb/proxy-example.txt`), or the home network over plain http (desktops only). Or one of three profiles, run by the stack:
 
 | Profile | Needs | Start with |
 |---|---|---|

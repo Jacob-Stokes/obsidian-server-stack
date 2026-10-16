@@ -38,7 +38,8 @@ services:
       # the REST API (see couchdb-init.sh) into local.d/docker.ini.
       - ./config/livesync.ini:/opt/couchdb/etc/local.ini
     ports:
-      - "${COUCHDB_PORT:-5984}:5984"
+      # this machine only, unless the address step (or COUCHDB_PORT) says otherwise
+      - "${COUCHDB_PORT:-127.0.0.1:5984}:5984"
     healthcheck:
       test:
         - "CMD-SHELL"

@@ -10,6 +10,7 @@
 | `obsidian-stack add` / `remove [id]` | Add a vault, or remove one (its files are kept) |
 | `obsidian-stack app enable\|disable <id>` | The optional Obsidian app for a vault (below) |
 | `obsidian-stack resync <id>` | Self-hosted LiveSync: fetch the vault again, after a device rebuilt it |
+| `obsidian-stack address` | How devices reach CouchDB (self-hosted LiveSync): this machine's Tailscale, a tunnel, a proxy, a domain… Checks what's already on the machine first |
 | `obsidian-stack setup-uri <id> [--url]` | Setup URI for a self-hosted LiveSync vault's devices; `--url` changes the address they connect to |
 | `obsidian-stack logs <id\|api\|mcp\|couchdb> [-f]` | Logs for a vault's sync or a core container |
 | `obsidian-stack restart <id\|api\|mcp\|couchdb\|all>` | Restart one part, or everything |
