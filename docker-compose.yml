@@ -26,6 +26,12 @@ services:
       API_KEY: ${API_KEY:?Set API_KEY in .env}
     volumes:
       - ./vaults:/vaults
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3000/health').then(r => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     networks:
       - obsidian-net
 
@@ -40,9 +46,6 @@ services:
       obsidian-server-stack.id: ${STACK_ID:?Set STACK_ID in .env}
       obsidian-server-stack.role: core
     restart: unless-stopped
-    # Passes through optional settings like MCP_OAUTH_* if set in .env.
-    env_file:
-      - .env
     environment:
       PORT: 7002
       OBSIDIAN_BASE_URL: http://obsidian-api:3000
@@ -59,10 +62,24 @@ services:
       # offered when OBSIDIAN_MANAGER_TOKEN is set.
       OBSIDIAN_MANAGER_URL: http://${INSTANCE_PREFIX:-}obsidian-manager:7320
       OBSIDIAN_MANAGER_TOKEN: ${OBSIDIAN_MANAGER_TOKEN:-}
+      # Optional OAuth for clients that need a login (docs/mcp.md): on when
+      # MCP_OAUTH_ISSUER and MCP_OAUTH_CANONICAL_URL are set.
+      MCP_OAUTH_ISSUER: ${MCP_OAUTH_ISSUER:-}
+      MCP_OAUTH_CANONICAL_URL: ${MCP_OAUTH_CANONICAL_URL:-}
+      MCP_OAUTH_JWKS_URI: ${MCP_OAUTH_JWKS_URI:-}
+      MCP_OAUTH_AUDIENCE: ${MCP_OAUTH_AUDIENCE:-}
+      MCP_OAUTH_SCOPES: ${MCP_OAUTH_SCOPES:-}
     ports:
       - "127.0.0.1:${MCP_PORT:-7002}:7002"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:7002/health').then(r => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     depends_on:
-      - obsidian-api
+      obsidian-api:
+        condition: service_healthy
     networks:
       - obsidian-net
 

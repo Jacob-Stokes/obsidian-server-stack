@@ -19,7 +19,7 @@ The install is **one compose project**:
 
 - `docker-compose.yml` (the core, in the repository) includes **`vaults.compose.yml`**, which `obsidian-stack` writes from the registry whenever vaults change: each vault's services, written out in full (`<id>-sync`, plus `<id>-sync-init` for LiveSync, and `<id>-app`), CouchDB's compose file (included) once a vault needs it, and the manager while it's on.
 - The services come from templates next to each component (`sync/*/vault.yml`, `extras/obsidian-app/vault.yml`, `extras/manager/service.yml`), filled in with the vault's id and the install's prefix.
-- **Secrets aren't written into compose files.** Containers read them from `state/<id>/*.env` and `.env` (`env_file`) when they start; the manager's token is a `${…}` reference to `.env`.
+- **Secrets aren't written into compose files.** Containers read them from `state/<id>/*.env` (`env_file`) when they start, and from `.env` as `${…}` references naming only what each container needs.
 - **All data is inside the install folder**: LiveSync's local databases in `state/<id>/livesync-db`, CouchDB in `state/couchdb/`. No Docker volumes.
 - The registry stays the record of vaults (names, sources, the app flag), read by the API on every request as before.
 - Existing installs are moved over by `obsidian-stack update`: the old per-project containers are removed (the new ones have the same names) and each volume's data is copied into `state/`, then the volume removed.

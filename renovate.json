@@ -5,6 +5,7 @@
     "config:recommended"
   ],
   "enabledManagers": [
+    "docker-compose",
     "custom.regex",
     "pip_requirements"
   ],
@@ -37,6 +38,13 @@
   ],
   "packageRules": [
     {
+      "description": "CouchDB, curl, Caddy, Tailscale and cloudflared for LiveSync, in one pull request",
+      "matchManagers": [
+        "docker-compose"
+      ],
+      "groupName": "LiveSync images"
+    },
+    {
       "matchDepNames": [
         "vrtmrz/obsidian-livesync"
       ],
@@ -54,5 +62,10 @@
       ],
       "allowedVersions": "<2"
     }
-  ]
+  ],
+  "docker-compose": {
+    "managerFilePatterns": [
+      "/^sync/couchdb/docker-compose\\.yml$/"
+    ]
+  }
 }

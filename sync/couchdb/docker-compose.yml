@@ -21,7 +21,7 @@ name: ${INSTANCE_PREFIX:-}obsidian-couchdb
 
 services:
   couchdb:
-    image: couchdb:latest
+    image: couchdb:3.5.3
     container_name: ${INSTANCE_PREFIX:-}obsidian-couchdb
     labels:
       obsidian-server-stack.id: ${STACK_ID:?Set STACK_ID in .env}
@@ -43,7 +43,9 @@ services:
     healthcheck:
       test:
         - "CMD-SHELL"
-        - "curl -sf -u ${COUCHDB_USER}:${COUCHDB_PASSWORD} http://localhost:5984/_session | grep -q ok || exit 1"
+        # $$: expanded by the container's shell, so the password isn't
+        # written into the healthcheck that docker inspect shows
+        - "curl -sf -u \"$$COUCHDB_USER:$$COUCHDB_PASSWORD\" http://localhost:5984/_session | grep -q ok || exit 1"
       interval: 5s
       timeout: 5s
       retries: 24
@@ -54,7 +56,7 @@ services:
   # One-shot: runs after CouchDB is healthy, sets single-node cluster, auth,
   # CORS and size limits. Per-vault databases are created by install.sh.
   couchdb-init:
-    image: curlimages/curl:latest
+    image: curlimages/curl:8.23.0
     container_name: ${INSTANCE_PREFIX:-}obsidian-couchdb-init
     labels:
       obsidian-server-stack.id: ${STACK_ID:?Set STACK_ID in .env}
@@ -75,7 +77,7 @@ services:
 
   # --profile caddy — public domain + automatic Let's Encrypt TLS
   caddy:
-    image: caddy:latest
+    image: caddy:2.10
     container_name: ${INSTANCE_PREFIX:-}obsidian-couchdb-caddy
     labels:
       obsidian-server-stack.id: ${STACK_ID:?Set STACK_ID in .env}
@@ -100,7 +102,7 @@ services:
 
   # --profile tailscale — no domain needed, HTTPS via *.ts.net
   tailscale:
-    image: tailscale/tailscale:latest
+    image: tailscale/tailscale:v1.88
     container_name: ${INSTANCE_PREFIX:-}obsidian-couchdb-tailscale
     labels:
       obsidian-server-stack.id: ${STACK_ID:?Set STACK_ID in .env}
@@ -127,7 +129,7 @@ services:
 
   # --profile cloudflare — Cloudflare Tunnel
   cloudflared:
-    image: cloudflare/cloudflared:latest
+    image: cloudflare/cloudflared:2025.9.1
     container_name: ${INSTANCE_PREFIX:-}obsidian-couchdb-cloudflared
     labels:
       obsidian-server-stack.id: ${STACK_ID:?Set STACK_ID in .env}
