@@ -129,7 +129,7 @@ services:
 
   # --profile cloudflare — Cloudflare Tunnel
   cloudflared:
-    image: cloudflare/cloudflared:2025.9.1
+    image: cloudflare/cloudflared:2026.10.7
     container_name: ${INSTANCE_PREFIX:-}obsidian-couchdb-cloudflared
     labels:
       obsidian-server-stack.id: ${STACK_ID:?Set STACK_ID in .env}
